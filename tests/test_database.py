@@ -29,20 +29,24 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with await self.db.connect() as connection:
             await connection.execute("INSERT INTO economy_accounts(guild_id,user_id,wallet) VALUES ('1','10',100)")
             await connection.commit()
-        results = await asyncio.gather(
-            self.db.transfer(1, 10, 20, 80),
-            self.db.transfer(1, 10, 30, 80),
-        )
+        results = await asyncio.gather(self.db.transfer(1, 10, 20, 80), self.db.transfer(1, 10, 30, 80))
         self.assertEqual(sum(results), 1)
-        sender = await self.db.account(1, 10)
-        self.assertGreaterEqual(sender["wallet"], 0)
+        self.assertGreaterEqual((await self.db.account(1, 10))["wallet"], 0)
 
     async def test_daily_reward_is_single_claim(self):
-        now = 2_000_000_000
-        results = await asyncio.gather(*[
-            self.db.claim_reward(1, 99, "daily", 200, 86400, now) for _ in range(2)
-        ])
+        results = await asyncio.gather(*[self.db.claim_reward(1, 99, "daily", 200, 86400, 2_000_000_000) for _ in range(2)])
         self.assertEqual(sum(1 for ok, _ in results if ok), 1)
+
+    async def test_bank_moves_are_atomic(self):
+        await self.db.account(1, 42)
+        async with await self.db.connect() as connection:
+            await connection.execute("UPDATE economy_accounts SET wallet=100 WHERE guild_id='1' AND user_id='42'")
+            await connection.commit()
+        moved = await self.db.bank_move(1, 42, 75, True)
+        self.assertTrue(moved)
+        account = await self.db.account(1, 42)
+        self.assertEqual((account["wallet"], account["bank"]), (25, 75))
+        self.assertFalse(await self.db.bank_move(1, 42, 50, True))
 
 
 if __name__ == "__main__":

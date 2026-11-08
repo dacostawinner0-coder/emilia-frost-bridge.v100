@@ -1,0 +1,63 @@
+# Registre indicatif de l’état réel dans la branche copilot/emilia-frost-v100-foundation.
+# Ce fichier est volontairement distinct du cahier des charges complet.
+version = 1
+
+[[command]]
+name = "help"
+prefix = "! et /"
+category = "Général"
+status = "développé"
+
+[[command]]
+name = "ping"
+prefix = "! et /"
+category = "Général"
+status = "développé"
+
+[[command]]
+name = "balance"
+prefix = "! et /"
+category = "Économie"
+status = "développé"
+
+[[command]]
+name = "daily"
+prefix = "! et /"
+category = "Économie"
+status = "développé"
+
+[[command]]
+name = "work"
+prefix = "! et /"
+category = "Économie"
+status = "développé"
+
+[[command]]
+name = "pay"
+prefix = "! et /"
+category = "Économie"
+status = "développé"
+
+[[command]]
+name = "bank, deposit, withdraw, leaderboard"
+prefix = "! et /"
+category = "Économie"
+status = "développé"
+
+[[command]]
+name = "warn, warnings, timeout, kick, ban (role-ban), unban, discordban, setbanrole, setlog, clear"
+prefix = "+ et /"
+category = "Modération"
+status = "développé"
+
+[[command]]
+name = "ownerstatus"
+prefix = "w. et /"
+category = "Propriétaire"
+status = "développé, autorisation OWNER_IDS"
+
+[[command]]
+name = "Familles, tickets, prison de jeu, COFFRESMUSK, WINNERMUSK, véhicules, animalerie, gouvernement, événements, taxes, intérêts, transferts interserveurs"
+prefix = "—"
+category = "Modules du cahier maître"
+status = "prévu, non implémenté"
