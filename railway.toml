@@ -4,10 +4,9 @@ buildCommand = "pip install -r requirements.txt"
 
 [deploy]
 startCommand = "python main.py"
-restartPolicy = "on-failure"
-maxRetries = 3
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
 
 [variables]
 PYTHON_VERSION = "3.12"
-DATABASE_PATH = "database/bot.db"
-XP_COOLDOWN_SECONDS = "60"
+DATABASE_PATH = "/data/emilia_frost.db"
