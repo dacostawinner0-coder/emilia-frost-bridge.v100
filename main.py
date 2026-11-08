@@ -2,25 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from pathlib import Path
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
+from core.config import Settings
 from database import Database
-from ui import ERROR, GLACIER, make_embed
+from ui import ERROR, make_embed
 
-ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(),
+SETTINGS = Settings.from_env()
+logging.basicConfig(level=SETTINGS.log_level,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("emilia_frost")
-
-
-def owner_ids() -> set[int]:
-    return {int(value.strip()) for value in os.getenv("OWNER_IDS", "").split(",") if value.strip().isdigit()}
 
 
 class EmiliaBot(commands.Bot):
@@ -30,19 +23,26 @@ class EmiliaBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix=commands.when_mentioned_or("!", "+", "w."),
                          intents=intents, help_command=None, case_insensitive=True)
-        self.db = Database()
-        self.owner_ids = owner_ids()
+        self.db = Database(SETTINGS.database_path)
+        self.owner_ids = set(SETTINGS.owner_ids)
 
     async def setup_hook(self) -> None:
         await self.db.initialize()
-        await self.load_extension("cogs.economy")
-        await self.load_extension("cogs.moderation")
-        synced = await self.tree.sync()
-        log.info("%d commandes slash synchronisées", len(synced))
+        for extension in ("cogs.general", "cogs.economy", "cogs.moderation", "cogs.owner"):
+            await self.load_extension(extension)
+            log.info("Extension chargée : %s", extension)
+        if SETTINGS.sync_guild_id:
+            guild = discord.Object(id=SETTINGS.sync_guild_id)
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            log.info("%d commandes synchronisées sur le serveur de test %s", len(synced), SETTINGS.sync_guild_id)
+        else:
+            synced = await self.tree.sync()
+            log.info("%d commandes slash synchronisées globalement", len(synced))
 
     async def on_ready(self) -> None:
         log.info("Emilia Frost connectée : %s (%s), %s serveur(s)", self.user, self.user.id, len(self.guilds))
-        await self.change_presence(activity=discord.Game(name="❄️ Emilia Frost • /aide"))
+        await self.change_presence(activity=discord.Game(name="❄️ Emilia Frost • /help"))
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.CommandNotFound):
@@ -51,7 +51,8 @@ class EmiliaBot(commands.Bot):
             await ctx.send(embed=make_embed("Accès refusé", "Cette commande n’est pas disponible avec ce préfixe ou tes permissions.", ERROR), ephemeral=bool(ctx.interaction))
             return
         if isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(embed=make_embed("Paramètre manquant", f"Syntaxe : `{ctx.clean_prefix}{ctx.command.qualified_name} {ctx.command.signature}`", ERROR), ephemeral=bool(ctx.interaction))
+            syntax = f"{ctx.clean_prefix}{ctx.command.qualified_name} {ctx.command.signature}"
+            await ctx.send(embed=make_embed("Paramètre manquant", f"Syntaxe : `{syntax}`", ERROR), ephemeral=bool(ctx.interaction))
             return
         if isinstance(error, commands.BadArgument):
             await ctx.send(embed=make_embed("Paramètre invalide", "Vérifie les mentions, nombres et valeurs fournis.", ERROR), ephemeral=bool(ctx.interaction))
@@ -64,11 +65,9 @@ bot = EmiliaBot()
 
 
 async def main() -> None:
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN est absent. Configure-le dans les variables d’environnement de l’hébergeur.")
+    SETTINGS.validate_for_startup()
     async with bot:
-        await bot.start(token)
+        await bot.start(SETTINGS.discord_token)
 
 
 if __name__ == "__main__":
