@@ -1,0 +1,13 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "python main.py"
+restartPolicy = "on-failure"
+maxRetries = 3
+
+[variables]
+PYTHON_VERSION = "3.12"
+DATABASE_PATH = "database/bot.db"
+XP_COOLDOWN_SECONDS = "60"
