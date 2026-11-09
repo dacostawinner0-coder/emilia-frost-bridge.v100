@@ -1,18 +1,19 @@
 """Emilia Frost startup module.
 
-Supports the bot branch and the starter Railway health-check behavior: with a
-DISCORD_TOKEN it boots the bot; without one it serves the lightweight health endpoint.
+With DISCORD_TOKEN set, run the legacy Emilia bot (whose commands are
+registered by emilia_frost.py and emilia_extra.py). If those modules are not
+shipped, run the modular cogs bot instead. Without a token, expose a small
+health endpoint for deployment diagnostics.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     import discord
     from discord.ext import commands
-except ImportError:  # Optional for the health-check-only deployment.
+except ImportError:  # Health-check-only deployments may omit the Discord package.
     discord = None
     commands = None
 
@@ -34,38 +35,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format, *args):
-        super().log_message(format, *args)
-
-
-if commands is not None:
-    class EmiliaBot(commands.Bot):
-        """Bot bootstrap used by startup tests and deployments."""
-
-        def __init__(self, db_path: str | None = None, **kwargs):
-            intents = discord.Intents.default()
-            intents.message_content = True
-            intents.members = True
-            super().__init__(command_prefix="!", intents=intents, help_command=None, **kwargs)
-            if Database is None:
-                self.db = None
-            else:
-                self.db = Database(db_path or os.getenv("DATABASE_PATH", "data/emilia_frost.db"))
-
-        async def initialize_runtime(self):
-            if self.db is not None and hasattr(self.db, "initialize"):
-                await self.db.initialize()
-            for extension in ("cogs.general", "cogs.economy", "cogs.moderation", "cogs.owner"):
-                try:
-                    await self.load_extension(extension)
-                except Exception:
-                    # Keep startup resilient when optional cogs aren't included.
-                    continue
-else:
-    class EmiliaBot:  # pragma: no cover - used only without discord.py installed
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
-
 
 def start_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
@@ -74,29 +43,73 @@ def start_health_server() -> None:
     server.serve_forever()
 
 
+if commands is not None:
+    class EmiliaBot(commands.Bot):
+        """Modular-cogs bot bootstrap, also used by startup tests."""
+
+        def __init__(self, db_path: str | None = None, **kwargs):
+            intents = discord.Intents.default()
+            intents.message_content = True
+            intents.members = True
+            owners = {
+                int(value.strip())
+                for value in os.getenv("OWNER_IDS", "").split(",")
+                if value.strip().isdigit()
+            }
+            super().__init__(
+                command_prefix=commands.when_mentioned_or("!", "+", "w."),
+                intents=intents,
+                help_command=None,
+                owner_ids=owners,
+                **kwargs,
+            )
+            self.db = (
+                Database(db_path or os.getenv("DATABASE_PATH", "data/emilia_frost.db"))
+                if Database is not None else None
+            )
+
+        async def initialize_runtime(self):
+            if self.db is not None:
+                await self.db.initialize()
+            for extension in ("cogs.general", "cogs.economy", "cogs.moderation", "cogs.owner"):
+                await self.load_extension(extension)
+
+        async def setup_hook(self) -> None:
+            await self.initialize_runtime()
+            if self.tree is not None:
+                await self.tree.sync()
+else:
+    class EmiliaBot:  # pragma: no cover - used only without discord.py installed
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
+
+
+def _run_modular_bot(token: str) -> None:
+    if commands is None:
+        raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
+    bot = EmiliaBot()
+    bot.run(token)
+
+
 def main() -> None:
-    token = os.getenv("DISCORD_TOKEN")
+    token = os.getenv("DISCORD_TOKEN", "").strip()
     if not token:
         start_health_server()
         return
 
-    if commands is None:
-        raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
-
-    # Keep historical cogs/listeners that register on import when they exist.
+    # The legacy modules register their commands on their own shared bot. Run
+    # that instance directly; creating a second Bot would leave those commands
+    # attached to an inactive instance.
     try:
         import emilia_frost  # noqa: F401
-        import emilia_extra  # noqa: F401
-    except ModuleNotFoundError:
-        pass
+        import emilia_extra
+    except ModuleNotFoundError as error:
+        if error.name not in {"emilia_frost", "emilia_extra"}:
+            raise
+        _run_modular_bot(token)
+        return
 
-    bot = EmiliaBot()
-
-    async def bootstrap() -> None:
-        await bot.initialize_runtime()
-
-    asyncio.run(bootstrap())
-    bot.run(token)
+    emilia_extra.main()
 
 
 if __name__ == "__main__":
