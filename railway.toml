@@ -1,12 +1,7 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "pip install -r requirements.txt"
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "python main.py"
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
-
-[variables]
-PYTHON_VERSION = "3.12"
-DATABASE_PATH = "/data/emilia_frost.db"
+restartPolicy = "ON_FAILURE"
+restartPolicyMaxRetries = 3

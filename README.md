@@ -1,39 +1,100 @@
-# ❄️ Emilia Frost v100
+# ❄️ Emilia Frost — Bot-Hosting
 
-Base Python `discord.py` 2.x en français, identité bleu glacier et violet pastel. Cette branche constitue une fondation exécutable et documente les limites : elle **n’implémente pas encore tout le cahier maître**.
+Bot Discord Python 3.11+ (`discord.py` 2.4+), SQLite, réponses aux couleurs d’Emilia Frost et commandes en français. Les commandes principales sont organisées en groupes utilisables avec `+` et `/`.
 
-## Fonctions actuellement présentes dans le code
+## Installation
 
-- Commandes hybrides slash et préfixe pour aide, solde, daily, work, transfert local, banque, dépôt/retrait et classement.
-- Préfixes publics `!`, staff `+`, et propriétaire `w.` reconnus par le bot ; chaque commande reste soumise à ses contrôles. Les commandes `w.` ne sont pas encore développées.
-- Comptes SQLite isolés par serveur (`guild_id`), mode WAL, contraintes de soldes non négatifs et journal des mouvements.
-- Récompenses quotidiennes/travail, transferts et mouvements bancaires protégés contre le double clic/la concurrence par transactions SQLite.
-- Modération avec hiérarchie du membre et du bot vérifiée, avertissements historisés, timeout, kick, purge, configuration des logs, role-ban interne `+ban` et ban Discord natif séparé `+discordban`.
+1. Décompresse le ZIP et ouvre le dossier du bot.
+2. Installe Python 3.11 ou plus récent, puis lance `pip install -r requirements.txt`.
+3. Copie `.env.example` vers `.env` en local, puis configure les variables ci-dessous. Sur un hébergeur, utilise plutôt son panneau de variables secrètes.
+4. Active **Message Content Intent** et **Server Members Intent** dans le portail Discord Developer, et autorise l’installation des commandes d’application pour le bot.
+5. Lance `python main.py`.
+6. Garde le dossier `database/` sur un stockage persistant.
+7. Sur Bot-Hosting, règle `DISCORD_TOKEN` dans le panneau des variables secrètes. N’ajoute jamais le vrai token au ZIP.
 
-## Éléments du cahier maître encore absents
+### Variables indispensables
 
-Familles, tickets, prison de jeu, COFFRESMUSK, WINNERMUSK, véhicules, animaux, gouvernement, élections, missions, événements, taxes/intérêts, transferts interserveurs, dashboard, sauvegardes externes et autres modules ne sont **pas** encore implémentés. Les commandes non présentes ne doivent pas être présentées aux membres comme disponibles. Le classement actuel est fondé sur les fonds liquides, pas sur les biens.
+- `DISCORD_TOKEN` : token du bot, à garder secret.
+- `DATABASE_PATH=database/bot.db` : base persistante.
+- `XP_COOLDOWN_SECONDS=60` : délai entre deux gains d’XP de chat (10 à 3600 secondes, séparé pour chaque serveur).
+- `WINNER_ID` : **identifiant numérique Discord exact du propriétaire WINNERMUSK**. Les commandes privées WINNERMUSK sont bloquées tant que cet identifiant n’est pas configuré. Le nom d’utilisateur seul ne suffit pas.
 
-## Déploiement Railway
+## Préfixes
 
-1. Crée un service Railway depuis la branche `copilot/emilia-frost-v100-foundation`.
-2. Ajoute les variables Railway `DISCORD_TOKEN` (secret), `OWNER_IDS` (ID Discord numérique du propriétaire) et `DATABASE_PATH=/data/emilia_frost.db`.
-3. Ajoute un volume persistant monté sur `/data` afin de conserver la base au redémarrage.
-4. Dans Discord Developer Portal, active **Message Content Intent** et **Server Members Intent**. Invite le bot avec `applications.commands`, `Send Messages`, `Embed Links`, `Read Message History`; pour la modération, accorde seulement les permissions nécessaires. Place le rôle du bot au-dessus des rôles à gérer.
-5. Railway installe `requirements.txt` et lance `python main.py`. Vérifie les logs, puis teste `/aide`, `!daily`, `/balance` et les commandes staff sur un serveur privé.
-6. Configure `+setlog #salon` et `+setbanrole @rôle` avant d’utiliser les journaux ou `+ban`.
+- Les commandes texte utilisent `+` pour les membres, le staff et les administrateurs; les permissions sensibles restent vérifiées commande par commande.
+- Chaque commande texte dispose aussi d’une route slash : directement ou dans son groupe de fonction (par exemple `+balance` et `/eco balance`).
+- `+help [catégorie]` et `/help` affichent d’abord les catégories; donne une catégorie pour voir les commandes correspondantes.
+- En cas d’argument manquant ou mal formé, le bot affiche le format attendu, les arguments et un exemple.
+- Les réponses du bot et des boutons utilisent des embeds; les refus d’interaction restent privés.
+- Configure le rôle staff avec `+setup staff @rôle` ou `/setup staff`.
+- Discord affiche son indicateur d’écriture/chargement pendant l’exécution des commandes.
 
-Ne partage jamais le token du bot. Si exposé, régénère-le dans le Developer Portal. Une base sans volume persistant peut être perdue lors d’un redéploiement.
+## Commandes principales
 
-## Lancement local
+### Économie et progression
+`+eco balance`, `+eco daily`, `+eco work`, `+eco pay`, `+eco deposit`, `+eco withdraw`, `+eco mine`, `+eco top`, `+eco profile`, `+eco shop`, `+eco buy`, `+eco inventory`, `+eco loan`, `+social quests`, `+social pets`. Les variantes slash correspondantes apparaissent dans l’autocomplétion Discord.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows : .venv\\Scripts\\activate
-pip install -r requirements.txt
-cp .env.example .env
-# Renseigner les variables puis :
-python main.py
-```
+### Boutiques, équipement et objets
+- `+eco markets [all|regular|rare|black|equipment]`
+- `+eco marketbuy ID`, `+social inventoryplus`
+- Administrateur : `+admin marketadd boutique prix coins|mf stock Nom|description`, `+admin marketpromo ID pourcentage`, `+admin marketrotate [all|regular|rare|black|equipment]`
+- Coffres à 5 raretés : Commun, Rare, Épique, Légendaire, Mythique.
 
-L’archive finale ne devra être préparée qu’après audit, tests et demande explicite « Fais le ZIP ».
+### Raids, courses et biens
+- Raid : `+games raid create nom_du_boss PV récompense`, `+games raid join`, `+games raid attack`
+- Salon d’annonces : `+admin raidchannel #salon`
+- Courses : `+games race create`, `+games race join nom_véhicule`, `+games race finish`
+- Enchères : `+games auction-list`, `+games auction-create prix nom`, `+games auction-bid ID montant`, `+games auction-finish ID`
+- Patrimoine : `+social assets`, `+admin assetvalue @membre type nom valeur`
+- WINNERMUSK : `+winner store`, `+winner buy ID`, `+winner assets`, `+winner sell type Nom exact`, `+winner repair type Nom exact`.
+
+### WINNERMUSK — propriétaire uniquement
+Une fois `WINNER_ID` configuré :
+- `+winner add voiture|moto|maison prix stock Nom|description`
+- `+winner gift @membre voiture|moto|maison Nom exact`
+- `+winner remove ID`, `+winner stock ID stock`, `+winner media ID URL`
+- `+winner ledger`, `+winner invest @membre montant part`, `+winner payout montant`
+
+Les joueurs peuvent acheter les articles publiés dans le catalogue. Les commandes de gestion et de cadeau sont contrôlées par identifiant numérique, pas par nom d’utilisateur ni par simple permission administrateur.
+
+### Gouvernement et économie avancée
+- `+events government show`
+- `+events government nominate president @membre`
+- `+events government election president|premierministre|mafia`
+- `+events government vote ID @candidat`, `+events vote`, `+events limits president|premierministre richesse popularité niveau`
+- Seuils par défaut : Président Top 5 richesse, Top 7 popularité et Top 10 niveaux. Pour Premier ministre et Chef de la Mafia, les seuils proposés par défaut sont Top 10 richesse, Top 15 popularité, Top 20 niveaux; ils sont modifiables avec `+govlimits premierministre richesse popularité niveau`.
+- `+social tradeoffer @membre montant [type:nom,type:nom]`, `+social tradeaccept ID`, `+social traderefuse ID`
+- `+eco loan montant`, `+eco myloan`; prélèvement automatique à échéance, dette restante conservée.
+- `+admin journalchannel #salon`, `+admin journal`
+
+### Invitations, accueil, événements
+- `+social invites [@membre]`, `+admin invite-reward montant`, `+admin invite-role seuil @rôle`
+- `+admin welcome #salon`
+- `+events active`, `+events claim halloween|winterfest|spring|anniversary`
+- `+events start halloween|winterfest|spring|anniversary jours`
+- Le code des événements saisonniers est isolé dans `cogs/seasonal_events.py`; retirer ce module n’efface pas les Crédits déjà gagnés.
+
+### Modération, tickets et aide
+- `+admin automod spam|links|invites|mentions|caps|flood on|off`
+- Modération : `+moderation warn`, `+moderation warnings`, `+moderation purge`, `+moderation lock`, `+moderation unlock`.
+- Tickets : `+tickets open help|signalement|partenariat|staff`, `+tickets claim`, `+tickets transfer @staff`, `+tickets close`. La fermeture envoie une demande de note en DM si le membre accepte les messages privés.
+- Giveaways : `+giveaways create durée_secondes nombre_gagnants prix`, `+giveaways end ID_message`, `+giveaways reroll ID_message`, `+giveaways claim ID_message`.
+
+## Configuration Discord nécessaire
+
+- Pour les tickets : Gérer les salons; configure la catégorie avec `+ticketsetup`.
+- Pour rôles et progression staff : Gérer les rôles, et le rôle du bot au-dessus des rôles qu’il attribue.
+- Pour le suivi des invitations : permission **Gérer le serveur** afin de lire les utilisations des invitations.
+- Pour le journal : configure le salon de logs dans la base via `+setlog #salon`.
+
+## Économie par serveur et migration de l’ancienne base
+
+- Les comptes, achats, soldes, XP, maisons, véhicules, catalogues WINNERMUSK, boutique classique et cooldowns utilisent le serveur courant.
+- Une ancienne base partagée ne peut pas attribuer correctement ses soldes à plusieurs serveurs sans inventer l’origine. Le programme en crée donc d’abord une sauvegarde, puis conserve les anciennes tables globales sous des noms `legacy_*_global`; les nouveaux comptes par serveur démarrent à zéro.
+- La migration n’est pas lancée silencieusement. Si une ancienne base est détectée, le bot s’arrête sans rien changer tant que `CONFIRM_LEGACY_ECONOMY_MIGRATION=YES` n’a pas été défini après sauvegarde et lecture de `BOT_HOSTING_SETUP.md`. Tickets, rôles, paramètres de serveur et journaux ne sont pas réinitialisés.
+- La vidéo ne peut pas être garantie en lecture intégrée dans un embed Discord. `+winnermedia` permet de lier une animation ou une vidéo; les images/GIF directs peuvent être affichés dans l’embed.
+- Les enchères et certains transferts de biens avancés ont besoin de tests réels supplémentaires.
+- Les raids ont un boss à PV, attaques, contre-attaques et récompenses proportionnelles; il n’y a pas encore d’arbres de compétences complets ni d’animations dédiées.
+- L’auto-mod propose des règles de base, mais n’est pas un filtre linguistique complet et n’applique pas encore une échelle automatique de sanctions graduées.
+- Les invitations dépendent des permissions Discord et du cache des invitations; certaines entrées non attribuables ne peuvent pas être créditées avec certitude.
+- Le bot n’a pas été connecté à Discord dans l’environnement de création. Les commandes slash, permissions, DM, boutons, intents et hébergement doivent encore être validés sur un serveur privé.
