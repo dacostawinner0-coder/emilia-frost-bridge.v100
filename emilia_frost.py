@@ -763,7 +763,16 @@ async def on_ready():
 @bot.event
 asy@bot.event
 async def on_command_error(ctx, error):
+ @bot.event
+async def on_command_error(ctx, error):
     typing = getattr(ctx, "_emilia_typing", None)
+    if typing is not None:
+        ctx._emilia_typing = None
+        try:
+            await typing.__aexit__(None, None, None)
+        except Exception:
+            pass 
+  typing = getattr(ctx, "_emilia_typing", None)
     if typing is not None:
         ctx._emilia_typing = None
         try:
