@@ -1,26 +1,10 @@
-"""Emilia Frost startup module.
+"""Minimal Railway-ready starter server for the Emilia project.
 
-With DISCORD_TOKEN set, run the legacy Emilia bot (whose commands are
-registered by emilia_frost.py and emilia_extra.py). If those modules are not
-shipped, run the modular cogs bot instead. Without a token, expose a small
-health endpoint for deployment diagnostics.
+Replace or extend this health-check server with the bot's actual functionality.
 """
-from __future__ import annotations
 
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-try:
-    import discord
-    from discord.ext import commands
-except ImportError:  # Health-check-only deployments may omit the Discord package.
-    discord = None
-    commands = None
-
-try:
-    from database import Database
-except ImportError:
-    Database = None
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -28,6 +12,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path not in ("/", "/health"):
             self.send_error(404, "Not found")
             return
+
         body = b"Emilia is running\n"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -35,81 +20,16 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def log_message(self, format, *args):
+        # Keep standard request logging in Railway's deployment logs.
+        super().log_message(format, *args)
 
-def start_health_server() -> None:
+
+def main():
     port = int(os.environ.get("PORT", "8080"))
     server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     print(f"Emilia health server listening on port {port}", flush=True)
     server.serve_forever()
-
-
-if commands is not None:
-    class EmiliaBot(commands.Bot):
-        """Modular-cogs bot bootstrap, also used by startup tests."""
-
-        def __init__(self, db_path: str | None = None, **kwargs):
-            intents = discord.Intents.default()
-            intents.message_content = True
-            intents.members = True
-            owners = {
-                int(value.strip())
-                for value in os.getenv("OWNER_IDS", "").split(",")
-                if value.strip().isdigit()
-            }
-            super().__init__(
-                command_prefix=commands.when_mentioned_or("!", "+", "w."),
-                intents=intents,
-                help_command=None,
-                owner_ids=owners,
-                **kwargs,
-            )
-            self.db = (
-                Database(db_path or os.getenv("DATABASE_PATH", "data/emilia_frost.db"))
-                if Database is not None else None
-            )
-
-        async def initialize_runtime(self):
-            if self.db is not None:
-                await self.db.initialize()
-            for extension in ("cogs.general", "cogs.economy", "cogs.moderation", "cogs.owner"):
-                await self.load_extension(extension)
-
-        async def setup_hook(self) -> None:
-            await self.initialize_runtime()
-            if self.tree is not None:
-                await self.tree.sync()
-else:
-    class EmiliaBot:  # pragma: no cover - used only without discord.py installed
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
-
-
-def _run_modular_bot(token: str) -> None:
-    if commands is None:
-        raise RuntimeError("discord.py est nécessaire pour démarrer le bot.")
-    bot = EmiliaBot()
-    bot.run(token)
-
-
-def main() -> None:
-    token = os.getenv("DISCORD_TOKEN", "").strip()
-    if not token:
-        start_health_server()
-        return
-
-    # The legacy modules register their commands on their own shared bot. Run
-    # that instance directly; creating a second Bot would leave those commands
-    # attached to an inactive instance.
-    try:
-        import emilia_frost  # noqa: F401
-        import emilia_extra
-    except ModuleNotFoundError as error:
-        if error.name not in {"emilia_frost", "emilia_extra"}:
-            raise
-        _run_modular_bot(token)
-        return
-
-    emilia_extra.main()
 
 
 if __name__ == "__main__":

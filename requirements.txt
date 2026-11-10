@@ -1,3 +1,1 @@
-discord.py>=2.4.0,<3.0.0
-python-dotenv>=1.0.1,<2.0.0
-aiosqlite>=0.20.0,<1.0.0
+# No third-party packages are required for the starter health server.
