@@ -761,7 +761,15 @@ async def on_ready():
             t.start()
 
 @bot.event
+asy@bot.event
 async def on_command_error(ctx, error):
+    typing = getattr(ctx, "_emilia_typing", None)
+    if typing is not None:
+        ctx._emilia_typing = None
+        try:
+            await typing.__aexit__(None, None, None)
+        except Exception:
+            pas snc def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.MissingRequiredArgument):
