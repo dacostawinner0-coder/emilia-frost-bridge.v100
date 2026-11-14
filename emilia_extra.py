@@ -22,6 +22,7 @@ import discord
 from discord.ext import commands, tasks
 
 import emilia_frost as ef
+import emilia_bumpworld as ebw
 from emilia_frost import (
     bot, connect, config_get, config_set, get_user, update_user, add_tx, log_event,
     frost_embed, fmt, now, fmt_ts, q, admin_check, mod_check, owner_check,
@@ -59,9 +60,9 @@ OWNER_COMMANDS = {"winneradd", "dashboard", "gencode", "activity", "journal",
                   "servers", "setfee", "setcrosslimit"}
 
 STAFF_COMMANDS = (set(ef.STAFF_COMMANDS) - {"winneradd", "winner", "dashboard"}) | {
-    "setprefix", "autosuivi", "claim", "ticketadd", "ticketremove",
+    "setprefix", "autosuivi", "claim", "ticketadd", "ticketremove", "bumpset", "bumpleave",
     "config", "showconfig", "setlog", "setwelcome", "setleave", "setchest", "setevent",
-    "setrole", "ticketcategory", "givemoney", "setmoney", "givemf", "setmf",
+    "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf",
     "shopadd", "shopstock", "shopprice", "shopremove", "verify", "verifsetup",
 }
 ef.STAFF_COMMANDS.clear()
@@ -278,6 +279,7 @@ _shortcut("setleave", "leave_channel_id", "Définir le salon des départs (admin
 _shortcut("setchest", "chest_channel_id", "Définir le salon des coffres COFFRESMUSK (admins). <#salon>")
 _shortcut("setevent", "event_channel_id", "Définir le salon des événements et du boss (admins). <#salon>")
 _shortcut("ticketcategory", "ticket_category_id", "Définir la catégorie des tickets (admins). <catégorie>")
+_shortcut("setjournal", "journal_channel_id", "Définir le salon 📖・journal du serveur (admins). <#salon>")
 
 ROLE_KEYS = {"admin": "admin_role_id", "mod": "mod_role_id", "ban": "ban_role_id",
              "ticket": "ticket_ping_role_id", "bump": "bump_role_id"}
@@ -765,19 +767,25 @@ def _journal_channel(guild):
 @bot.command(name="journal", help="Publier un message dans le journal de chaque serveur (propriétaire). <message>")
 @owner_check()
 async def journal(ctx, *, message: str):
-    sent, failed = 0, 0
+    sent, problems = 0, []
     for g in bot.guilds:
         ch = _journal_channel(g)
         if ch is None:
-            failed += 1
+            problems.append(f"**{g.name}** — aucun salon journal : configure-le avec `+setjournal #salon`.")
+            continue
+        if not ch.permissions_for(g.me).send_messages:
+            problems.append(f"**{g.name}** — {ch.mention} configuré, mais je n'ai pas la permission d'y écrire.")
             continue
         try:
             await ch.send(embed=frost_embed(title="📖 Journal d'Emilia Frost", desc=message[:3500], color=FROST),
                           allowed_mentions=discord.AllowedMentions.none())
             sent += 1
-        except discord.HTTPException:
-            failed += 1
-    await ctx.send(f"📖 Publié dans **{sent}** serveur(s) ; indisponible dans **{failed}**.")
+        except discord.HTTPException as e:
+            problems.append(f"**{g.name}** — échec d'envoi ({e.status}).")
+    desc = f"✅ Publié dans **{sent}** serveur(s) sur **{len(bot.guilds)}**."
+    if problems:
+        desc += "\n\n**Non publié :**\n" + "\n".join(problems[:15])
+    await ctx.send(embed=frost_embed(title="📖 Journal", desc=desc[:3900], color=FROST))
 
 
 @bot.command(name="servers", help="Liste des serveurs d'Emilia Frost (propriétaire).")
@@ -1041,12 +1049,13 @@ CATEGORIES = {
     "⛓️ Prison": {"imprison", "prisonstatus", "prisonhistory", "release", "prisonbailrate", "evader"},
     "📩 Tickets & giveaways": {"ticketpanel", "ticketping", "ticketnote", "ticketnotes", "claim", "close",
                                "ticketadd", "ticketremove", "chastaff", "giveaway", "gwreroll", "claimgw"},
+    "🌍 BumpWorld": {"bump", "bumpset", "bumpleave", "bumpworld"},
     "⚙️ Administration": {"config", "showconfig", "setlog", "setwelcome", "setleave", "setchest", "setevent",
-                          "setrole", "ticketcategory", "givemoney", "setmoney", "givemf", "setmf", "shopadd",
+                          "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf", "shopadd",
                           "shopstock", "shopprice", "shopremove", "adminabuse", "setprefix", "autosuivi",
                           "autoreactrole", "verify", "verifsetup", "setfee", "setcrosslimit", "dashboard",
                           "activity", "journal", "servers"},
-    "📡 Serveur & infos": {"bump", "invites", "topinvites", "userinfo", "serverinfo", "avatar", "banner",
+    "📡 Serveur & infos": {"invites", "topinvites", "userinfo", "serverinfo", "avatar", "banner",
                            "roleinfo", "channelinfo", "ping", "statsbot", "invite", "prefix", "menu", "help"},
 }
 
@@ -1146,8 +1155,10 @@ async def _setup_hook():
     bot.add_view(ef.TicketClaimView())
     bot.add_view(ef.GiveawayJoinView())
     bot.add_dynamic_items(ef.RateButton)
+    ebw.register_persistent_views()
     if not activity_loop.is_running():
         activity_loop.start()
+    ebw.start_loop()
 
 
 bot.setup_hook = _setup_hook
@@ -1172,6 +1183,7 @@ def main():
     ef.init_db(db)
     ef.init_db_complements(db)
     init_extra_db(db)
+    ebw.init_bumpworld_db(db)
     db.close()
     if not ef.TOKEN:
         raise SystemExit("DISCORD_TOKEN manquant : ajoute la variable DISCORD_TOKEN dans Railway.")

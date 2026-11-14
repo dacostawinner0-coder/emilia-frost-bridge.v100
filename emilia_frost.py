@@ -2197,23 +2197,47 @@ async def ban(ctx, member: discord.Member, *, reason: str = ""):
     finally:
         db.close()
 
-@bot.command(name="banned", help="État du role-ban d'un membre.")
+@bot.command(name="banned", help="Liste les role-bannis, ou l'état d'un membre précis. [@membre]")
 async def banned(ctx, member: discord.Member = None):
     g = ctx.guild
     if not mod_check(ctx):
         await ctx.send(q("no_perm"))
         return
-    m = member or ctx.author
     db = connect()
     try:
-        r = db.execute(
-            "SELECT * FROM role_bans WHERE guild_id=? AND user_id=?",
-            (g.id, m.id)).fetchone()
-        if r:
-            await ctx.send(f"🔒 {m.display_name} est role-banni(e) — {r['reason'] or '—'} "
+        ban_role_id = config_get(db, g.id, "ban_role_id")
+        ban_role = g.get_role(int(ban_role_id)) if ban_role_id else None
+        if member is None:
+            rows = db.execute("SELECT * FROM role_bans WHERE guild_id=? ORDER BY created_at DESC",
+                              (g.id,)).fetchall()
+            if not rows:
+                await ctx.send("❄ Aucun membre role-banni actuellement sur ce serveur.")
+                return
+            lines = []
+            for r in rows:
+                mm = g.get_member(r["user_id"])
+                has_role = bool(ban_role and mm and ban_role in mm.roles)
+                mark = "" if has_role else " ⚠️ *(rôle absent — à vérifier)*"
+                name = mm.display_name if mm else f"<@{r['user_id']}> *(a quitté le serveur)*"
+                lines.append(f"🔒 **{name}** — {r['reason'] or '—'}{mark}")
+            await ctx.send(embed=frost_embed(title=f"🔒 Role-bannis ({len(rows)})",
+                                             desc="\n".join(lines)[:3900], color=ICE),
+                           allowed_mentions=discord.AllowedMentions.none())
+            return
+        r = db.execute("SELECT * FROM role_bans WHERE guild_id=? AND user_id=?",
+                      (g.id, member.id)).fetchone()
+        has_role = bool(ban_role and ban_role in member.roles)
+        if r and has_role:
+            await ctx.send(f"🔒 {member.display_name} est role-banni(e) — {r['reason'] or '—'} "
                            f"(depuis {fmt_ts(r['created_at'])})")
+        elif r and not has_role:
+            await ctx.send(f"⚠️ {member.display_name} est enregistré(e) comme role-banni(e) mais n'a "
+                           "plus le rôle configuré — vérifie les rôles du serveur ou relance `+ban`.")
+        elif has_role and not r:
+            await ctx.send(f"⚠️ {member.display_name} a le rôle de ban mais aucun enregistrement "
+                           "trouvé — a-t-il été ajouté manuellement sur Discord ?")
         else:
-            await ctx.send(f"❄ {m.display_name} n'est pas role-banni(e).")
+            await ctx.send(f"❄ {member.display_name} n'est pas role-banni(e).")
     finally:
         db.close()
 
@@ -2435,9 +2459,6 @@ def xp_for_level(level: int) -> int:
 
 @bot.event
 async def on_message(message):
-    if message.guild and message.author.id == DISBOARD_ID:
-        await _handle_disboard(message)
-        return
     if message.author.bot or not message.guild:
         return
     db = connect()
@@ -3299,76 +3320,14 @@ async def block(ctx):
         db.close()
 
 # ══════════════════════════════════════════════════════════════════════
-#  T. BUMP — 1 bump/serveur/3 h, classement
+#  T. BUMP — remplacé par BumpWorld (voir emilia_bumpworld.py)
 # ══════════════════════════════════════════════════════════════════════
-@bot.command(name="bump", help="Classement des bumps du cycle en cours.")
-async def bump(ctx):
-    g = ctx.guild
-    db = connect()
-    try:
-        cycle = now() // 10800
-        rows = db.execute(
-            "SELECT b.guild_id, b.bumped, b.best_user, b.best_count "
-            "FROM bumps b WHERE b.cycle=? ORDER BY b.bumped DESC", (cycle,)).fetchall()
-        if not rows:
-            await ctx.send("❄ Aucun bump ce cycle. Le silence est assourdissant.")
-            return
-        lines = []
-        for i, r in enumerate(rows, 1):
-            pts = 1 if i == 1 else 0.5
-            guild = bot.get_guild(r["guild_id"])
-            name = guild.name if guild else f"#{r['guild_id']}"
-            best = f" — meilleur : <@{r['best_user']}> ({r['best_count']})" if r["best_user"] else ""
-            lines.append(f"{'🥇' if i == 1 else f'**{i}.**'} {name} — {pts} pt{best}")
-        e = frost_embed(title="📈 Classement des bumps",
-                        desc="\n".join(lines) + "\n\n⏳ Cycle : 3 h", color=ICE)
-        await ctx.send(embed=e)
-    finally:
-        db.close()
-
 @bot.event
 async def on_message_edit(before, after):
-    """Détection du message de confirmation DISBOARD + auto-suivi des mods."""
+    """Auto-suivi des mods (le suivi DISBOARD est géré par BumpWorld)."""
     if before.guild is None or after.guild is None:
         return
-    # Auto-suivi : relaye la version modifiée (si activé)
     await autosuivi_relay_edit(before, after)
-    await _handle_disboard(after)
-
-DISBOARD_ID = 302050872383242240
-
-async def _handle_disboard(message):
-    """Compte un bump uniquement si le message vient du vrai DISBOARD (jamais d'un membre)."""
-    if message.guild is None or message.author.id != DISBOARD_ID:
-        return
-    blob = (message.content or "") + " ".join((e.description or "") for e in message.embeds)
-    low = blob.lower()
-    if "bump" not in low or not any(k in low for k in ("done", "effectu", "fait", "réussi", "reussi", "bumped")):
-        return
-    after = message
-    invoker = None
-    meta = getattr(message, "interaction_metadata", None) or getattr(message, "interaction", None)
-    if meta is not None:
-        invoker = getattr(meta, "user", None)
-    db = connect()
-    try:
-        cycle = now() // 10800
-        row = db.execute(
-            "SELECT * FROM bumps WHERE guild_id=? AND cycle=?",
-            (after.guild.id, cycle)).fetchone()
-        if row and row["bumped"]:
-            return
-        db.execute(
-            "INSERT INTO bumps (guild_id, cycle, bumped, best_user, best_count) "
-            "VALUES (?,?,1,?,1) "
-            "ON CONFLICT(guild_id, cycle) DO UPDATE SET bumped=1, "
-            "best_user=COALESCE(excluded.best_user, bumps.best_user), "
-            "best_count=MAX(bumps.best_count, excluded.best_count)",
-            (after.guild.id, cycle, invoker.id if invoker else None))
-        db.commit()
-        log_event(db, after.guild.id, invoker.id if invoker else None, "bump", f"cycle {cycle}")
-    finally:
-        db.close()
 
 # ══════════════════════════════════════════════════════════════════════
 #  U. INVITE TRACKER
@@ -3831,7 +3790,7 @@ MENU_CATEGORIES = {
         ("profil", "Profil complet"),
         ("succes", "Succès débloqués"),
         ("invites", "Tes invitations"),
-        ("bump", "Classement des bumps"),
+        ("bumpworld", "BumpWorld : classement, serveurs, invitations"),
     ],
     "👑 WINNERMUSK": [
         ("winner", "Catalogue exclusif"),
@@ -4163,7 +4122,7 @@ class DashboardView(discord.ui.View):
                 "SELECT COUNT(*) FROM transactions WHERE guild_id=?",
                 (self.guild_id,)).fetchone()[0]
             champs = db.execute(
-                "SELECT COUNT(*) FROM chest_events WHERE guild_id=?",
+                "SELECT COUNT(*) FROM chests WHERE guild_id=? AND claimed_by IS NOT NULL",
                 (self.guild_id,)).fetchone()[0]
             e = frost_embed(title="📊 Statistiques du serveur",
                             desc=f"👥 Membres enregistrés : **{members}**\n"
@@ -4187,7 +4146,7 @@ class DashboardView(discord.ui.View):
             e = frost_embed(
                 title="🛡️ Paramètres actifs",
                 desc=f"⚡ Multiplicateur : **x{mult:g}** "
-                     f"{'jusqu' + fmt_ts(until) if until > now() else '(inactif)'}\n"
+                     f"({'jusqu' + chr(39) + 'à ' + fmt_ts(until) if until > now() else 'inactif'})\n"
                      f"⛓️ Caution prison : **{fmt(bail)} / min**\n"
                      f"🌐 Frais interserveurs : **{fee} %**\n"
                      f"🌐 Limite interserveurs : **{fmt(limit)} / jour**",
@@ -4464,16 +4423,18 @@ async def clear(ctx, amount: int = 10):
 async def lock(ctx):
     if not mod_check(ctx):
         await ctx.send(q("no_perm")); return
-    over = {"everyone": discord.PermissionOverwrite(send_messages=False)}
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over)
+    over = discord.PermissionOverwrite(send_messages=False)
+    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over,
+                                      reason=f"Verrouillage par {ctx.author}")
     await ctx.send("🔒 Salon **verrouillé**.")
 
 @bot.command(name="unlock", help="Déverrouiller le salon (staff).")
 async def unlock(ctx):
     if not mod_check(ctx):
         await ctx.send(q("no_perm")); return
-    over = {"everyone": discord.PermissionOverwrite(send_messages=None)}
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over)
+    over = discord.PermissionOverwrite(send_messages=None)
+    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over,
+                                      reason=f"Déverrouillage par {ctx.author}")
     await ctx.send("🔓 Salon **déverrouillé**.")
 
 @bot.command(name="mute", aliases=["timeout"], help="Muter un membre (staff). <membre> <minutes>")
@@ -4490,7 +4451,7 @@ async def mute(ctx, member: discord.Member, minutes: int = 10):
 async def unmute(ctx, member: discord.Member):
     if not mod_check(ctx):
         await ctx.send(q("no_perm")); return
-    await member.remove_timeout()
+    await member.timeout(None, reason=f"Unmute par {ctx.author}")
     await ctx.send(f"✅ **{member.display_name}** peut de nouveau parler.")
 
 @bot.command(name="kick", help="Expulser un membre (staff). <membre> [motif]")
@@ -4865,7 +4826,7 @@ async def avatar(ctx, member: discord.Member = None):
     m = member or ctx.author
     e = discord.Embed(title=f"🖼️ Avatar de {m.display_name}",
                       description=f"[Télécharger]({m.display_avatar.url})")
-    e.set_image(m.display_avatar.url)
+    e.set_image(url=m.display_avatar.url)
     await ctx.send(embed=e)
 
 @bot.command(name="banner", help="Bannière d'un membre. <membre>")
@@ -4873,7 +4834,7 @@ async def banner(ctx, member: discord.Member = None):
     m = member or ctx.author
     if m.banner:
         e = discord.Embed(title=f"🖼️ Bannière de {m.display_name}")
-        e.set_image(m.banner.url)
+        e.set_image(url=m.banner.url)
         await ctx.send(embed=e)
     else:
         await ctx.send("❄ Ce membre n'a pas de bannière.")
