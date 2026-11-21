@@ -62,10 +62,10 @@ OWNER_COMMANDS = {"winneradd", "dashboard", "gencode", "activity", "journal", "v
 
 STAFF_COMMANDS = (set(ef.STAFF_COMMANDS) - {"winneradd", "winner", "dashboard"}) | {
     "setprefix", "autosuivi", "claim", "ticketadd", "ticketremove", "bumpset", "bumpleave",
-    "rolestaff", "staffup", "staffdown", "recrutsetup", "recrutlog", "recrutrole", "recrutquestion",
-    "config", "showconfig", "setlog", "setwelcome", "setleave", "setchest", "setevent",
+    "rolestaff", "staffup", "staffdown", "recrutsetup", "recrutrole", "recrutquestion",
+    "config", "showconfig", "setlog", "setlogadmin", "setwelcome", "setleave", "setchest", "setevent",
     "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf",
-    "shopadd", "shopstock", "shopprice", "shopremove", "verify", "verifsetup",
+    "shopadd", "shopstock", "shopprice", "shopremove", "verify", "verifsetup", "giveawayclaimtime",
 }
 ef.STAFF_COMMANDS.clear()
 ef.STAFF_COMMANDS.update(STAFF_COMMANDS)
@@ -132,8 +132,9 @@ MAX_AMOUNT = 1_000_000_000_000
 # ══════════════════════════════════════════════════════════════════════
 # clé : (type, description)
 CONFIG_KEYS = {
-    "mod_log_channel_id":   ("channel",  "Salon unique des logs de modération"),
-    "log_channel_id":       ("channel",  "Salon des journaux (tickets, revues staff…)"),
+    "log_general_id":       ("channel",  "Log 1 : modération, staff, tickets, giveaways"),
+    "log_admin_id":         ("channel",  "Log avancé : candidatures et notes sensibles — "
+                                         "réservé aux admins (pose les permissions du salon toi-même)"),
     "journal_channel_id":   ("channel",  "Salon 📖・journal (annonces du propriétaire)"),
     "welcome_channel_id":   ("channel",  "Salon d'accueil"),
     "leave_channel_id":     ("channel",  "Salon des départs"),
@@ -155,10 +156,10 @@ CONFIG_KEYS = {
     "bank_interest_pct":    ("number",   "Intérêt bancaire quotidien (%)"),
     "trade_tax_pct":        ("pct",      "Taxe sur les ventes entre membres (%)"),
     "family_create_cost":   ("int",      "Coût de création d'une famille"),
-    "prison_bail_rate":     ("int",      "Caution de prison (Crédits/minute)"),
     "kill_success_rate":    ("pct",      "Kill & Block : chances de réussite (%)"),
     "kill_prison_rate":     ("pct",      "Kill & Block : risque de prison (%)"),
     "kill_steal_cap":       ("int",      "Kill & Block : plafond de vol"),
+    "giveaway_claim_minutes": ("int",    "Délai de réclamation des giveaways en minutes (0 = illimité)"),
     "ballon_pay_price":     ("int",      "Prix du second vote Ballon d'Or"),
 }
 OWNER_KEYS = {
@@ -275,12 +276,15 @@ def _shortcut(name, key, helptext):
     return _cmd
 
 
-_shortcut("setlog", "mod_log_channel_id", "Définir le salon unique des logs de modération (admins). <#salon>")
+_shortcut("setlog", "log_general_id", "Log 1 — modération, staff, tickets, giveaways (admins). <#salon>")
+_shortcut("setlogadmin", "log_admin_id", "Log avancé — candidatures et notes sensibles, admins uniquement. <#salon>")
 _shortcut("setwelcome", "welcome_channel_id", "Définir le salon d'accueil (admins). <#salon>")
 _shortcut("setleave", "leave_channel_id", "Définir le salon des départs (admins). <#salon>")
 _shortcut("setchest", "chest_channel_id", "Définir le salon des coffres COFFRESMUSK (admins). <#salon>")
 _shortcut("setevent", "event_channel_id", "Définir le salon des événements et du boss (admins). <#salon>")
 _shortcut("ticketcategory", "ticket_category_id", "Définir la catégorie des tickets (admins). <catégorie>")
+_shortcut("giveawayclaimtime", "giveaway_claim_minutes",
+          "Délai de réclamation des giveaways en minutes, 0 = illimité (admins). <minutes>")
 _shortcut("setjournal", "journal_channel_id", "Définir le salon 📖・journal du serveur (admins). <#salon>")
 
 ROLE_KEYS = {"admin": "admin_role_id", "mod": "mod_role_id", "ban": "ban_role_id",
@@ -549,43 +553,133 @@ async def ticketremove(ctx, member: discord.Member):
 # ══════════════════════════════════════════════════════════════════════
 #  E. GIVEAWAYS — réclamation sous 5 minutes
 # ══════════════════════════════════════════════════════════════════════
-@bot.command(name="claimgw", help="Réclamer ton gain de giveaway (sous 5 min).")
-async def claimgw(ctx):
+# ══════════════════════════════════════════════════════════════════════
+#  RÔLES EN UN CLIC — menu déroulant moderne (façon DraftBot), persistant
+# ══════════════════════════════════════════════════════════════════════
+def init_rolemenu_db(db):
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS role_panels (
+        message_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL, title TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS role_panel_roles (
+        message_id INTEGER NOT NULL, role_id INTEGER NOT NULL, label TEXT NOT NULL,
+        PRIMARY KEY (message_id, role_id)
+    );
+    """)
+    db.commit()
+
+
+class RoleMenuSelect(discord.ui.Select):
+    """custom_id fixe et unique pour TOUS les panneaux : un seul enregistrement persistant
+    (bot.add_view) suffit pour que chaque panneau, quel que soit son nombre de rôles,
+    survive à n'importe quel redémarrage — Discord renvoie les vraies options choisies
+    sur le vrai message, peu importe celles déclarées ici au démarrage."""
+    def __init__(self, options=None, max_values=1):
+        opts = options or [discord.SelectOption(label="…", value="0")]
+        super().__init__(placeholder="Choisis un ou plusieurs rôles…", min_values=0,
+                         max_values=max(1, max_values), options=opts[:25],
+                         custom_id="emilia_rolemenu_pick")
+
+    async def callback(self, inter: discord.Interaction):
+        db = connect()
+        try:
+            init_rolemenu_db(db)
+            rows = db.execute("SELECT role_id, label FROM role_panel_roles WHERE message_id=?",
+                             (inter.message.id,)).fetchall()
+        finally:
+            db.close()
+        valid = {str(r["role_id"]): r["label"] for r in rows}
+        picked = [v for v in self.values if v in valid]
+        added, removed = [], []
+        member = inter.user
+        for rid, label in valid.items():
+            role = inter.guild.get_role(int(rid))
+            if not role:
+                continue
+            want = rid in picked
+            has = role in member.roles
+            if want and not has:
+                try:
+                    await member.add_roles(role, reason="Rôle en un clic")
+                    added.append(label)
+                except discord.HTTPException:
+                    pass
+            elif not want and has and rid in {str(r["role_id"]) for r in rows}:
+                # on ne retire que les rôles PRÉSENTS sur ce panneau et non sélectionnés cette fois
+                pass
+        # Retrait : seuls les rôles du panneau que le membre avait et n'a pas (re)choisis
+        for rid, label in valid.items():
+            if rid in picked:
+                continue
+            role = inter.guild.get_role(int(rid))
+            if role and role in member.roles:
+                try:
+                    await member.remove_roles(role, reason="Rôle en un clic (désélectionné)")
+                    removed.append(label)
+                except discord.HTTPException:
+                    pass
+        parts = []
+        if added:
+            parts.append("✅ Ajouté(s) : " + ", ".join(added))
+        if removed:
+            parts.append("➖ Retiré(s) : " + ", ".join(removed))
+        await inter.response.send_message("\n".join(parts) or "❄ Aucun changement.", ephemeral=True)
+
+
+class RoleMenuView(discord.ui.View):
+    def __init__(self, options=None, max_values=1):
+        super().__init__(timeout=None)
+        self.add_item(RoleMenuSelect(options, max_values))
+
+
+@bot.command(name="rolemenu",
+             help="Panneau de rôles en un clic (admins). <#salon> <titre> | <@rôle> <label> | <@rôle> <label> ...")
+async def rolemenu(ctx, channel: discord.TextChannel, *, rest: str):
+    if not ef.admin_check(ctx):
+        await ctx.send(q("no_perm")); return
+    parts = [p.strip() for p in rest.split("|") if p.strip()]
+    if len(parts) < 2:
+        await ctx.send("❄ Syntaxe : `+rolemenu #salon Titre | @rôle Label | @rôle Label ...` (2 rôles minimum)."); return
+    title = parts[0]
+    options, role_rows = [], []
+    for seg in parts[1:]:
+        m = re.match(r"^\s*<@&(\d+)>\s*(.*)$", seg)
+        if not m:
+            await ctx.send(f"❄ Segment invalide (rôle manquant) : « {seg} »"); return
+        role = ctx.guild.get_role(int(m.group(1)))
+        if not role:
+            await ctx.send(f"❄ Rôle introuvable dans : « {seg} »"); return
+        label = m.group(2).strip() or role.name
+        options.append(discord.SelectOption(label=label[:100], value=str(role.id)))
+        role_rows.append((role.id, label[:100]))
+    if len(options) > 25:
+        await ctx.send("❄ 25 rôles maximum par panneau."); return
+    e = frost_embed(title=f"🎭 {title}",
+                    desc="Choisis un ou plusieurs rôles dans le menu ci-dessous — "
+                         "resélectionner un rôle déjà obtenu te le retire.",
+                    color=ICE)
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    msg = await channel.send(embed=e, view=RoleMenuView(options, max_values=len(options)))
     db = connect()
     try:
-        init_extra_db(db)
-        rows = db.execute(
-            "SELECT * FROM giveaway_winners WHERE guild_id=? AND user_id=? AND claimed=0 "
-            "ORDER BY claim_until DESC", (ctx.guild.id, ctx.author.id)).fetchall()
-        if not rows:
-            await ctx.send("❄ Aucun gain à réclamer."); return
-        live = [r for r in rows if r["claim_until"] >= now()]
-        if not live:
-            await ctx.send("⏳ Trop tard : le délai de réclamation de 5 minutes est dépassé. "
-                           "Le staff peut relancer avec `+gwreroll`."); return
-        r = live[0]
-        db.execute("UPDATE giveaway_winners SET claimed=1 WHERE guild_id=? AND message_id=? AND user_id=?",
-                   (r["guild_id"], r["message_id"], r["user_id"]))
-        log_event(db, ctx.guild.id, ctx.author.id, "giveaway_claim", r["prize"] or "")
+        init_rolemenu_db(db)
+        db.execute("INSERT INTO role_panels (message_id, guild_id, channel_id, title) VALUES (?,?,?,?)",
+                  (msg.id, ctx.guild.id, channel.id, title))
+        for rid, label in role_rows:
+            db.execute("INSERT INTO role_panel_roles (message_id, role_id, label) VALUES (?,?,?)",
+                      (msg.id, rid, label))
         db.commit()
-        if r["item_id"] is not None:
-            shop_item = db.execute("SELECT item FROM shops WHERE guild_id=? AND kind='regular' AND item_id=?",
-                                   (ctx.guild.id, r["item_id"])).fetchone()
-            if shop_item:
-                ef._inv_add(db, ctx.guild.id, ctx.author.id, shop_item["item"])
-                db.commit()
-                await ctx.send(f"🎁 {ctx.author.mention} réclame **{r['prize']}** — "
-                               f"**{shop_item['item']}** ajouté(e) directement à ton inventaire !")
-                return
-        # Pas d'article lié (ou introuvable) : remise manuelle via un ticket
-        channel = await ef._create_ticket_channel(
-            ctx.guild, ctx.author, ticket_type="Giveaway",
-            description=f"Gain à remettre : **{r['prize']}**\n(giveaway réclamé, remise manuelle requise)")
-        await ctx.send(f"🎁 {ctx.author.mention} réclame **{r['prize']}** ! "
-                       f"Un ticket a été ouvert pour la remise : {channel.mention}",
-                       allowed_mentions=discord.AllowedMentions.none())
     finally:
         db.close()
+    await ctx.send(f"✅ Panneau de rôles posté dans {channel.mention}.")
+
+
+@bot.command(name="claimgw", help="Réclamer ton gain de giveaway (ou utilise le bouton 🎁 Réclamer).")
+async def claimgw(ctx):
+    ok, text = await ef._claim_giveaway(ctx.guild, ctx.author)
+    await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1052,6 +1146,20 @@ async def _grant_member(guild, member, db):
 
 
 @bot.listen("on_message")
+async def _ping_response(message: discord.Message):
+    if message.author.bot or message.guild is None:
+        return
+    content = message.content.strip()
+    mention_forms = (f"<@{bot.user.id}>", f"<@!{bot.user.id}>")
+    if content not in mention_forms:
+        return   # seulement si le message est juste le ping, rien d'autre
+    prefix = ef._member_prefix(message.guild.id)
+    await message.channel.send(
+        f"❄ Pas besoin de me mentionner pour tout savoir — tape `{prefix}help` (ou `+help` pour le staff) "
+        "et tu trouveras tout.")
+
+
+@bot.listen("on_message")
 async def _verif_dm_answer(message):
     if message.author.bot or message.guild is not None:
         return
@@ -1072,7 +1180,10 @@ async def _verif_dm_answer(message):
         if int(m.group(1)) == row["answer"]:
             await _grant_member(guild, member, db)
             log_event(db, guild.id, member.id, "verif_ok", "")
+            db.close()
             await message.channel.send(f"✅ Bien joué ! Bienvenue sur **{guild.name}**.")
+            await ef._log_autosuivi(guild, "✅ Vérification réussie", f"{member.mention} est vérifié(e).")
+            return
         else:
             tries = row["tries"] + 1
             db.execute("UPDATE verif_pending SET tries=? WHERE guild_id=? AND user_id=?",
@@ -1080,7 +1191,12 @@ async def _verif_dm_answer(message):
             db.commit()
             if tries >= 3:
                 log_event(db, guild.id, member.id, "verif_failed", "3 essais ratés")
+                db.close()
                 await message.channel.send("❄ Trop d'erreurs. Contacte le staff pour être validé manuellement.")
+                await ef._log_autosuivi(guild, "❌ Vérification échouée",
+                                        f"{member.mention} — 3 essais ratés, validation manuelle requise "
+                                        f"(`+verify {member.mention}`)", color=0xFF4D6D)
+                return
             else:
                 await message.channel.send(f"❄ Mauvaise réponse. Il te reste **{3 - tries}** essai(s).")
     finally:
@@ -1142,15 +1258,14 @@ CATEGORIES = {
     "👪 Familles & gouvernement": {"famille", "guerre", "election", "gouvernement", "vote", "loi", "lois"},
     "🛡️ Modération": {"warn", "warnhistory", "ban", "banned", "unban", "setbanrole", "clear", "lock", "unlock",
                       "mute", "unmute", "kick", "slowmode", "nick", "automod", "starboard", "amende"},
-    "⛓️ Prison": {"imprison", "prisonstatus", "prisonhistory", "release", "prisonbailrate", "evader"},
     "📩 Tickets & giveaways": {"ticketpanel", "ticketping", "tickettype", "ticketnote", "ticketnotes", "claim", "close",
                                "ticketadd", "ticketremove", "chastaff", "giveaway", "gwreroll", "claimgw"},
     "🌍 BumpWorld": {"bump", "bumpset", "bumpleave"},
     "🏅 Staff & recrutement": {"rolestaff", "staffup", "staffdown", "staffstats", "rankstaff",
-                              "recrutsetup", "recrutlog", "recrutrole", "recrutquestion"},
-    "⚙️ Administration": {"config", "showconfig", "setlog", "setwelcome", "setleave", "setchest", "setevent",
+                              "recrutsetup", "recrutrole", "recrutquestion"},
+    "⚙️ Administration": {"config", "showconfig", "setlog", "setlogadmin", "setwelcome", "setleave", "setchest", "setevent",
                           "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf", "shopadd",
-                          "shopstock", "shopprice", "shopremove", "adminabuse", "setprefix", "autosuivi",
+                          "shopstock", "shopprice", "shopremove", "adminabuse", "setprefix", "autosuivi", "giveawayclaimtime",
                           "autoreactrole", "verify", "verifsetup", "setfee", "setcrosslimit", "dashboard",
                           "activity", "journal", "servers"},
     "📡 Serveur & infos": {"invites", "topinvites", "userinfo", "serverinfo", "avatar", "banner",
@@ -1311,6 +1426,7 @@ async def _setup_hook():
     bot.add_dynamic_items(ef.RateButton)
     ebw.register_persistent_views()
     est.register_persistent_views()
+    bot.add_view(ef.GiveawayClaimView())
     for _k in ("member", "staff", "owner"):
         bot.add_view(HelpView(_k))
     if not activity_loop.is_running():

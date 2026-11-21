@@ -259,6 +259,9 @@ async def _do_rank_change(ctx, member: discord.Member, target_level: int, forced
     finally:
         db.close()
     verb = "monte au" if target_level > row["level"] else "descend au"
+    await ef._log_general(ctx.guild, "🏅 Changement de niveau staff",
+                          f"{member.mention} : niveau {row['level']} → **{target_level}** "
+                          f"— Par {ctx.author.mention} (forcé)")
     await ctx.send(f"✅ {member.mention} {verb} niveau **{target_level}**.",
                    allowed_mentions=discord.AllowedMentions.none())
 
@@ -316,6 +319,8 @@ class RankupView(discord.ui.View):
             db.commit()
         finally:
             db.close()
+        await ef._log_general(inter.guild, "🏅 Niveau staff mérité",
+                              f"{member.mention} : niveau {row['level']} → **{nxt}** (seuil atteint)")
         button.disabled = True
         await inter.response.edit_message(content=f"🎉 Félicitations, tu es maintenant **niveau {nxt}** !",
                                           embed=None, view=self)
@@ -374,20 +379,6 @@ async def recrutrole(ctx, role: discord.Role):
     finally:
         db.close()
     await ctx.send(f"✅ Rôle staff général → {role.mention}.", allowed_mentions=discord.AllowedMentions.none())
-
-
-@bot.command(name="recrutlog", help="Salon des réponses de candidature (admins). <#salon>")
-async def recrutlog(ctx, channel: discord.TextChannel):
-    if not ef.admin_check(ctx):
-        await ctx.send(q("no_perm")); return
-    db = connect()
-    try:
-        init_staff_db(db); _ensure_recruit_cfg(db, ctx.guild.id)
-        db.execute("UPDATE recruit_config SET log_channel_id=? WHERE guild_id=?", (channel.id, ctx.guild.id))
-        db.commit()
-    finally:
-        db.close()
-    await ctx.send(f"✅ Salon des candidatures → {channel.mention}.")
 
 
 @bot.command(name="recrutquestion", help="Gérer les questions. add <texte> | liste | del <numéro>")
@@ -486,23 +477,23 @@ async def _submit_application(app, answers_list, questions):
     finally:
         db.close()
     guild = bot.get_guild(app["guild_id"])
-    if guild is None or cfg is None or not cfg["log_channel_id"]:
-        return
-    channel = guild.get_channel(cfg["log_channel_id"])
-    if channel is None:
+    if guild is None:
         return
     applicant = guild.get_member(app["user_id"])
     lines = [f"**{q['question']}**\n{a}" for q, a in zip(questions, answers_list)]
-    e = frost_embed(title=f"📋 Candidature de {applicant.display_name if applicant else app['user_id']}",
-                    desc="\n\n".join(lines)[:3900], color=EXCL)
-    role = guild.get_role(cfg["staff_role_id"]) if cfg["staff_role_id"] else None
-    msg = await channel.send(content=role.mention if role else None, embed=e,
-                             view=RecruitLogView(app["id"]),
-                             allowed_mentions=discord.AllowedMentions(roles=[role] if role else False))
+    role = guild.get_role(cfg["staff_role_id"]) if (cfg and cfg["staff_role_id"]) else None
+    msg = await ef._log_admin(
+        guild, f"📋 Candidature de {applicant.display_name if applicant else app['user_id']}",
+        "\n\n".join(lines)[:3900],
+        view=RecruitLogView(app["id"]),
+        content=role.mention if role else None,
+        allowed_mentions=discord.AllowedMentions(roles=[role] if role else False))
+    if msg is None:
+        return  # log_admin_id pas encore configuré (+config log_admin_id #salon)
     db = connect()
     try:
         db.execute("UPDATE recruit_applications SET log_message_id=?, log_channel_id=? WHERE id=?",
-                  (msg.id, channel.id, app["id"]))
+                  (msg.id, msg.channel.id, app["id"]))
         db.commit()
     finally:
         db.close()

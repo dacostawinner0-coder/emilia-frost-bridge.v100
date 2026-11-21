@@ -629,6 +629,68 @@ def config_set(db, guild_id, key, value):
         (guild_id, key, str(value)))
     db.commit()
 
+async def _log_general(guild: discord.Guild, title: str, desc: str, color=None):
+    """Log 1 — modération, staff, tickets, giveaways : visible par tout le staff."""
+    if guild is None:
+        return
+    db = connect()
+    try:
+        cid = config_get(db, guild.id, "log_general_id")
+    finally:
+        db.close()
+    if not cid:
+        return
+    ch = guild.get_channel(int(cid))
+    if ch is None:
+        return
+    try:
+        await ch.send(embed=frost_embed(title=title, desc=desc, color=color or RED))
+    except discord.HTTPException:
+        pass
+
+
+async def _log_admin(guild: discord.Guild, title: str, desc: str, color=None, view=None, content=None,
+                     allowed_mentions=None):
+    """Log avancé — candidatures, notes sensibles : réservé aux admins (permissions à poser sur le salon)."""
+    if guild is None:
+        return None
+    db = connect()
+    try:
+        cid = config_get(db, guild.id, "log_admin_id")
+    finally:
+        db.close()
+    if not cid:
+        return None
+    ch = guild.get_channel(int(cid))
+    if ch is None:
+        return None
+    try:
+        return await ch.send(content=content, embed=frost_embed(title=title, desc=desc, color=color or EXCL),
+                             view=view, allowed_mentions=allowed_mentions)
+    except discord.HTTPException:
+        return None
+
+
+async def _log_autosuivi(guild: discord.Guild, title: str, desc: str, color=None):
+    """Log 2 — autosuivi et vérifications : réutilise le salon déjà configuré par +autosuivi salon."""
+    if guild is None:
+        return
+    db = connect()
+    try:
+        cid = _autosuivi_target(db, guild.id)
+    finally:
+        db.close()
+    if not cid:
+        return
+    ch = guild.get_channel(int(cid))
+    if ch is None:
+        return
+    try:
+        await ch.send(embed=frost_embed(title=title, desc=desc, color=color or FROST))
+    except discord.HTTPException:
+        pass
+
+
 def log_event(db, guild_id, user_id, kind, detail=""):
     db.execute(
         "INSERT INTO audit_log (guild_id, user_id, kind, detail, created_at) "
@@ -717,7 +779,7 @@ intents.reactions = True
 STAFF_COMMANDS = {
     "warn","warnhistory","ban","banned","unban","setbanrole","clear","purge",
     "lock","unlock","mute","timeout","unmute","kick","slowmode","nick","automod",
-    "starboard","imprison","prisonhistory","release","prisonbailrate","amende",
+    "starboard","amende",
     "rankup","setrankstaff","salaire","chastaff","adminabuse","caisse","giveaway",
     "gwreroll","raid","autoreactrole","ticketpanel","ticketping","tickettype","ticketnote",
     "ticketnotes","setbump","setbumprole","setstarboard","setwelcome","setlog",
@@ -2168,43 +2230,48 @@ async def ban(ctx, member: discord.Member, *, reason: str = ""):
     db = connect()
     try:
         ban_role_id = config_get(db, g.id, "ban_role_id")
-        if not ban_role_id:
-            await ctx.send("❄ Configure d'abord le rôle Ban : `+setbanrole <rôle>`")
-            return
-        ban_role = g.get_role(int(ban_role_id))
-        if not ban_role:
-            await ctx.send("❄ Rôle Ban introuvable.")
-            return
-        removed = [r.name for r in member.roles if r != g.default_role and r != ban_role]
+        ban_role = g.get_role(int(ban_role_id)) if ban_role_id else None
+        if ban_role is None:
+            # Plus besoin de configuration manuelle : le rôle est créé automatiquement,
+            # une seule fois par serveur, puis réutilisé pour tous les role-bans suivants.
+            try:
+                ban_role = await g.create_role(
+                    name="🔒 Banni", color=discord.Color(0x4A4A4A), hoist=False, mentionable=False,
+                    reason="Création automatique du rôle de role-ban")
+                for ch in g.channels:
+                    try:
+                        await ch.set_permissions(ban_role, view_channel=False,
+                                                 reason="Rôle de role-ban : aucun salon visible")
+                    except discord.HTTPException:
+                        continue
+                config_set(db, g.id, "ban_role_id", ban_role.id)
+            except discord.HTTPException as e:
+                await ctx.send(f"❄ Impossible de créer le rôle de ban automatiquement : {e}")
+                return
+        removable = [r for r in member.roles if r != g.default_role and r != ban_role
+                    and not r.managed and r < g.me.top_role]
+        removed_ids = [r.id for r in removable]
+        removed_names = [r.name for r in removable]
         try:
             await member.add_roles(ban_role, reason=f"role-ban {reason}".strip())
-            for r in member.roles:
-                if r != g.default_role and r != ban_role:
-                    try:
-                        await member.remove_roles(r, reason="role-ban")
-                    except discord.HTTPException:
-                        pass
+            if removable:
+                await member.remove_roles(*removable, reason="role-ban")
         except discord.HTTPException as e:
             await ctx.send(f"❄ Discord a refusé : {e}")
             return
         db.execute(
             "INSERT OR REPLACE INTO role_bans (guild_id, user_id, reason, by_id, created_at, removed_roles) "
             "VALUES (?,?,?,?,?,?)",
-            (g.id, member.id, reason, ctx.author.id, now(), json.dumps(removed)))
+            (g.id, member.id, reason, ctx.author.id, now(), json.dumps(removed_ids)))
+        removed = removed_names
         db.commit()
         log_event(db, g.id, ctx.author.id, "role_ban", f"{member.id} : {reason}")
-        logch = config_get(db, g.id, "mod_log_channel_id")
-        if logch:
-            ch = g.get_channel(int(logch))
-            if ch:
-                await ch.send(embed=frost_embed(
-                    title="🔒 Role-ban",
-                    desc=f"**{member.mention}** — {reason}\nPar {ctx.author.mention}\n"
-                         f"Rôles retirés : {', '.join(removed) or 'aucun'}",
-                    color=RED))
-        await ctx.send(f"{q('ban')}\n🔒 {member.mention} est role-banni(e).")
     finally:
         db.close()
+    await _log_general(g, "🔒 Role-ban",
+                       f"**{member.mention}** — {reason or '—'}\nPar {ctx.author.mention}\n"
+                       f"Rôles retirés : {', '.join(removed) or 'aucun'}")
+    await ctx.send(f"{q('ban')}\n🔒 {member.mention} est role-banni(e).")
 
 @bot.command(name="banned", help="Liste les role-bannis, ou l'état d'un membre précis. [@membre]")
 async def banned(ctx, member: discord.Member = None):
@@ -2265,19 +2332,40 @@ async def unban(ctx, member: discord.Member):
             await ctx.send("❄ Ce membre n'est pas role-banni(e).")
             return
         ban_role_id = config_get(db, g.id, "ban_role_id")
-        if ban_role_id:
-            ban_role = g.get_role(int(ban_role_id))
-            if ban_role and ban_role in member.roles:
-                try:
-                    await member.remove_roles(ban_role, reason="role-unban")
-                except discord.HTTPException:
-                    pass
+        ban_role = g.get_role(int(ban_role_id)) if ban_role_id else None
+        if ban_role and ban_role in member.roles:
+            try:
+                await member.remove_roles(ban_role, reason="role-unban")
+            except discord.HTTPException:
+                pass
+        restored, skipped = [], []
+        try:
+            saved_ids = json.loads(r["removed_roles"] or "[]")
+        except (TypeError, ValueError):
+            saved_ids = []
+        to_restore = []
+        for rid in saved_ids:
+            role = g.get_role(int(rid)) if isinstance(rid, (int, str)) and str(rid).isdigit() else None
+            if role is None or role.managed or role >= g.me.top_role:
+                if isinstance(rid, str):
+                    skipped.append(rid)  # ancien format (nom) : impossible à restaurer précisément
+                continue
+            if role not in member.roles:
+                to_restore.append(role)
+        if to_restore:
+            try:
+                await member.add_roles(*to_restore, reason="role-unban : restauration des rôles")
+                restored = [role.name for role in to_restore]
+            except discord.HTTPException:
+                pass
         db.execute("DELETE FROM role_bans WHERE guild_id=? AND user_id=?", (g.id, member.id))
         db.commit()
-        log_event(db, g.id, ctx.author.id, "role_unban", f"{member.id}")
-        await ctx.send(f"❄ {member.mention} est libéré(e). La glace pardonne, rarement.")
+        log_event(db, g.id, ctx.author.id, "role_unban", f"{member.id} : {len(restored)} rôle(s) restauré(s)")
     finally:
         db.close()
+    note = f" {len(restored)} rôle(s) restauré(s) : {', '.join(restored)}." if restored else ""
+    await _log_general(g, "🔓 Role-unban", f"**{member.mention}** — Par {ctx.author.mention}{note}", color=ICE)
+    await ctx.send(f"❄ {member.mention} est libéré(e). La glace pardonne, rarement.{note}")
 
 @bot.command(name="setbanrole", help="Configurer le rôle Ban (admins).")
 async def setbanrole(ctx, role: discord.Role):
@@ -2289,172 +2377,6 @@ async def setbanrole(ctx, role: discord.Role):
     try:
         config_set(db, g.id, "ban_role_id", role.id)
         await ctx.send(f"🔒 Rôle Ban configuré : {role.mention}")
-    finally:
-        db.close()
-
-# ══════════════════════════════════════════════════════════════════════
-#  L. PRISON — libération auto, caution, blocage des gains
-# ══════════════════════════════════════════════════════════════════════
-PRISON_BLOCKED = {"work", "mine", "daily", "chest", "kill", "roulette", "blackjack",
-                  "pileouface", "des", "marchebuy", "marchesell"}
-
-def in_prison(db, guild_id, user_id):
-    r = db.execute(
-        "SELECT * FROM prison WHERE guild_id=? AND user_id=? AND released=0 "
-        "AND released_at>?", (guild_id, user_id, now())).fetchone()
-    return r
-
-@bot.before_invoke
-async def prison_before_invoke(ctx):
-    """Blocage des gains pendant la détention (L) + contrôle du préfixe (! membre / + staff)."""
-    if not ctx.guild or ctx.command is None:
-        return
-    # Contrôle du préfixe : "!" pour les membres, "+" pour le staff/admin/propriétaire
-    if ctx.command.name in STAFF_COMMANDS and (ctx.prefix or "").strip() == "!":
-        await ctx.send("❄ Cette commande est réservée au staff : utilise le préfixe **`+`** "
-                       f"(ex: `+{ctx.command.name}`).")
-        raise commands.CheckFailure()
-    if ctx.command.name not in PRISON_BLOCKED:
-        return
-    db = connect()
-    try:
-        p = in_prison(db, ctx.guild.id, ctx.author.id)
-        if p:
-            await ctx.send(
-                f"⛓️ Tu es en prison jusqu'à **{fmt_ts(p['released_at'])}** "
-                f"({remaining(p['released_at'])}).\n"
-                f"Motif : {p['reason'] or '—'}\n"
-                f"Caution : `+release` (sans cible).")
-            raise commands.CheckFailure()
-    finally:
-        db.close()
-
-@bot.command(name="imprison", help="Incarcérer un membre (staff/policier).")
-async def imprison(ctx, member: discord.Member, minutes: int, *, reason: str = ""):
-    g = ctx.guild
-    if not mod_check(ctx):
-        await ctx.send(q("no_perm"))
-        return
-    if not _can_sanitize(ctx.author, member):
-        await ctx.send("❄ La glace ne touche pas ceux qui sont au-dessus de toi.")
-        return
-    minutes = max(1, min(minutes, 30 * 24 * 60))   # max 30 jours
-    db = connect()
-    try:
-        db.execute(
-            "INSERT INTO prison (guild_id, user_id, reason, by_id, started_at, released_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (g.id, member.id, reason, ctx.author.id, now(), now() + minutes * 60))
-        db.commit()
-        log_event(db, g.id, ctx.author.id, "imprison", f"{member.id} {minutes} min : {reason}")
-        await ctx.send(f"⛓️ {member.mention} est incarcéré(e) pour **{minutes} min** — {reason or '—'}")
-    finally:
-        db.close()
-
-@bot.command(name="prisonstatus", help="État de détention d'un membre.")
-async def prisonstatus(ctx, member: discord.Member = None):
-    g = ctx.guild
-    m = member or ctx.author
-    db = connect()
-    try:
-        p = in_prison(db, g.id, m.id)
-        if p:
-            await ctx.send(f"⛓️ {m.display_name} : prison jusqu'à **{fmt_ts(p['released_at'])}** "
-                           f"({remaining(p['released_at'])}) — {p['reason'] or '—'}")
-        else:
-            await ctx.send(f"❄ {m.display_name} est libre. Pour l'instant.")
-    finally:
-        db.close()
-
-@bot.command(name="prisonhistory", help="Historique de prison d'un membre.")
-async def prisonhistory(ctx, member: discord.Member = None):
-    g = ctx.guild
-    m = member or ctx.author
-    db = connect()
-    try:
-        rows = db.execute(
-            "SELECT reason, started_at, released_at, released FROM prison "
-            "WHERE guild_id=? AND user_id=? ORDER BY started_at DESC LIMIT 10",
-            (g.id, m.id)).fetchall()
-        if not rows:
-            await ctx.send(f"❄ {m.display_name} n'a jamais été incarcéré(e).")
-            return
-        lines = [f"• {r['reason'] or '—'} — {fmt_ts(r['started_at'])} → "
-                 f"{fmt_ts(r['released_at'])}" + (" (libéré avant terme)" if r["released"] else "")
-                 for r in rows]
-        await ctx.send(embed=frost_embed(
-            title=f"⛓️ Prison — {m.display_name}", desc="\n".join(lines), color=RED))
-    finally:
-        db.close()
-
-@bot.command(name="release", help="Libérer (avec cible : staff) ou payer sa caution (sans cible).")
-async def release(ctx, member: discord.Member = None):
-    g = ctx.guild
-    db = connect()
-    try:
-        if member:
-            if not mod_check(ctx):
-                await ctx.send(q("no_perm"))
-                return
-            p = in_prison(db, g.id, member.id)
-            if not p:
-                await ctx.send("❄ Ce membre n'est pas en prison.")
-                return
-            db.execute("UPDATE prison SET released=1 WHERE id=?", (p["id"],))
-            db.commit()
-            log_event(db, g.id, ctx.author.id, "release", f"{member.id}")
-            await ctx.send(f"🔓 {member.mention} est libéré(e).")
-        else:
-            p = in_prison(db, g.id, ctx.author.id)
-            if not p:
-                await ctx.send("❄ Tu n'es pas en prison. Profites-en.")
-                return
-            rate = int(config_get(db, g.id, "prison_bail_rate", "100"))
-            mins_left = max(1, (p["released_at"] - now()) // 60)
-            bail = mins_left * rate
-            u = get_user(db, g.id, ctx.author.id)
-            if u["wallet"] < bail:
-                await ctx.send(f"❄ Caution : **{fmt(bail)}** ({rate}/min), tu as **{fmt(u['wallet'])}**.")
-                return
-            update_user(db, g.id, ctx.author.id, wallet=u["wallet"] - bail)
-            add_tx(db, g.id, ctx.author.id, "bail", -bail)
-            db.execute("UPDATE prison SET released=1 WHERE id=?", (p["id"],))
-            db.commit()
-            log_event(db, g.id, ctx.author.id, "bail_paid", f"{bail}")
-            await ctx.send(f"🔓 Caution de {COIN} **{fmt(bail)}** payée. Tu es libre.")
-    finally:
-        db.close()
-
-@bot.command(name="prisonbailrate", help="Tarif de caution par minute (admins).")
-async def prisonbailrate(ctx, rate: int):
-    g = ctx.guild
-    if not admin_check(ctx):
-        await ctx.send(q("no_perm"))
-        return
-    db = connect()
-    try:
-        config_set(db, g.id, "prison_bail_rate", rate)
-        await ctx.send(f"⚖️ Tarif de caution : **{rate}** ⚙️/minute.")
-    finally:
-        db.close()
-
-@tasks.loop(seconds=60)
-async def prison_loop():
-    """Libération automatique persistante après redémarrage."""
-    db = connect()
-    try:
-        rows = db.execute(
-            "SELECT * FROM prison WHERE released=0 AND released_at<=?", (now(),)).fetchall()
-        for p in rows:
-            db.execute("UPDATE prison SET released=1 WHERE id=?", (p["id"],))
-            db.commit()
-            guild = bot.get_guild(p["guild_id"])
-            if guild:
-                logch = config_get(db, guild.id, "mod_log_channel_id")
-                if logch:
-                    ch = guild.get_channel(int(logch))
-                    if ch:
-                        await ch.send(f"🔓 <@{p['user_id']}> a purgé sa peine et est libéré(e).")
     finally:
         db.close()
 
@@ -2838,14 +2760,17 @@ class RateButton(discord.ui.DynamicItem[discord.ui.Button], template=r"emilia_ra
                     update_user(db, t["guild_id"], t["staff_id"], xp=max(0, u["xp"] - 30))
                     log_event(db, t["guild_id"], t["staff_id"], "ticket_review",
                               f"ticket #{t['id']} noté {self.stars}/5 — revue superviseur requise")
-                    cfg = config_get(db, t["guild_id"], "log_channel_id")
-                    guild = inter.client.get_guild(t["guild_id"])
-                    ch = guild.get_channel(int(cfg)) if (guild and cfg) else None
-                    if ch:
-                        await ch.send(f"⚠️ Ticket **#{t['id']}** noté **{self.stars}/5** pour <@{t['staff_id']}> "
-                                      "— revue par un superviseur requise.",
-                                      allowed_mentions=discord.AllowedMentions.none())
+                    needs_review = True
+                else:
+                    needs_review = False
+            else:
+                needs_review = False
             db.commit()
+            if needs_review:
+                guild = inter.client.get_guild(t["guild_id"])
+                await _log_admin(guild, "⚠️ Note de ticket faible",
+                                 f"Ticket **#{t['id']}** noté **{self.stars}/5** pour <@{t['staff_id']}> "
+                                 "— revue par un superviseur requise.")
             await inter.response.edit_message(content=msg, view=None)
         finally:
             db.close()
@@ -3074,21 +2999,78 @@ async def giveaway_loop():
             wcols = [r[1] for r in db.execute("PRAGMA table_info(giveaway_winners)").fetchall()]
             if "item_id" not in wcols:
                 db.execute("ALTER TABLE giveaway_winners ADD COLUMN item_id INTEGER")
+            claim_minutes = int(config_get(db, gw["guild_id"], "giveaway_claim_minutes", "5") or 5)
+            claim_until = 0 if claim_minutes == 0 else now() + claim_minutes * 60
             for w in winners:
                 db.execute("INSERT OR IGNORE INTO giveaway_winners "
                            "(guild_id, message_id, user_id, prize, claim_until, item_id) "
                            "VALUES (?,?,?,?,?,?)",
-                           (gw["guild_id"], gw["message_id"], w, gw["prize"], now() + 300, gw["item_id"]))
+                           (gw["guild_id"], gw["message_id"], w, gw["prize"], claim_until, gw["item_id"]))
             db.commit()
             ch = guild.get_channel(gw["channel_id"])
             if ch:
                 mentions = " ".join(f"<@{w}>" for w in winners)
-                await ch.send(f"🏆 **Gagnant(s) de « {gw['prize']} »** : {mentions}\n"
-                              f"⏳ Réclame sous **5 min** avec `!claimgw`")
+                delay_txt = (f"⏳ Réclame avec le bouton ci-dessous (ou `!claimgw`) — sans limite de temps."
+                            if claim_minutes == 0 else
+                            f"⏳ Réclame avec le bouton ci-dessous (ou `!claimgw`) sous **{claim_minutes} min**.")
+                await ch.send(f"🏆 **Gagnant(s) de « {gw['prize']} »** : {mentions}\n{delay_txt}",
+                              view=GiveawayClaimView())
+            guild = guild or bot.get_guild(gw["guild_id"])
+            await _log_general(guild, "🎉 Giveaway tiré au sort",
+                               f"Lot : **{gw['prize']}**\nGagnant(s) : {mentions or 'aucun'}")
     except Exception as ex:
         print("giveaway_loop:", ex)
     finally:
         db.close()
+
+
+async def _claim_giveaway(guild: discord.Guild, member: discord.Member, message_id: int = None):
+    """Logique partagée entre le bouton 'Réclamer' et la commande !claimgw. Retourne (ok, texte)."""
+    db = connect()
+    try:
+        q_sql = ("SELECT * FROM giveaway_winners WHERE guild_id=? AND user_id=? AND claimed=0" +
+                (" AND message_id=?" if message_id else "") + " ORDER BY claim_until DESC")
+        params = (guild.id, member.id, message_id) if message_id else (guild.id, member.id)
+        rows = db.execute(q_sql, params).fetchall()
+        if not rows:
+            return False, "❄ Aucun gain à réclamer."
+        live = [r for r in rows if r["claim_until"] == 0 or r["claim_until"] >= now()]
+        if not live:
+            return False, ("⏳ Trop tard : le délai de réclamation est dépassé. "
+                           "Le staff peut relancer avec `+gwreroll`.")
+        r = live[0]
+        db.execute("UPDATE giveaway_winners SET claimed=1 WHERE guild_id=? AND message_id=? AND user_id=?",
+                   (r["guild_id"], r["message_id"], r["user_id"]))
+        log_event(db, guild.id, member.id, "giveaway_claim", r["prize"] or "")
+        db.commit()
+        if r["item_id"] is not None:
+            shop_item = db.execute("SELECT item FROM shops WHERE guild_id=? AND kind='regular' AND item_id=?",
+                                   (guild.id, r["item_id"])).fetchone()
+            if shop_item:
+                _inv_add(db, guild.id, member.id, shop_item["item"])
+                db.commit()
+                return True, (f"🎁 {member.mention} réclame **{r['prize']}** — "
+                             f"**{shop_item['item']}** ajouté(e) directement à ton inventaire !")
+        channel = await _create_ticket_channel(
+            guild, member, ticket_type="Giveaway",
+            description=f"Gain à remettre : **{r['prize']}**\n(giveaway réclamé, remise manuelle requise)")
+        return True, (f"🎁 {member.mention} réclame **{r['prize']}** ! "
+                      f"Un ticket a été ouvert pour la remise : {channel.mention}")
+    finally:
+        db.close()
+
+
+class GiveawayClaimView(discord.ui.View):
+    """Bouton persistant posé sur l'annonce des gagnants : chacun clique pour réclamer le sien."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎁 Réclamer", style=discord.ButtonStyle.success,
+                       custom_id="emilia_giveaway_claim")
+    async def claim(self, inter: discord.Interaction, button: discord.ui.Button):
+        ok, text = await _claim_giveaway(inter.guild, inter.user, message_id=inter.message.id)
+        await inter.response.send_message(text, ephemeral=not ok,
+                                          allowed_mentions=discord.AllowedMentions.none())
 
 # ══════════════════════════════════════════════════════════════════════
 #  F. JEUX — pile ou face, dés, roulette, blackjack
@@ -4545,6 +4527,8 @@ async def clear(ctx, amount: int = 10):
     amount = max(1, min(amount, 100))
     await ctx.channel.purge(limit=amount)
     await ctx.send(f"❄ **{amount}** messages effacés.", delete_after=5)
+    await _log_general(ctx.guild, "🧹 Messages effacés",
+                       f"**{amount}** message(s) dans {ctx.channel.mention} — Par {ctx.author.mention}")
 
 @bot.command(name="lock", help="Verrouiller le salon (staff).")
 async def lock(ctx):
@@ -4554,6 +4538,8 @@ async def lock(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over,
                                       reason=f"Verrouillage par {ctx.author}")
     await ctx.send("🔒 Salon **verrouillé**.")
+    await _log_general(ctx.guild, "🔒 Salon verrouillé",
+                       f"{ctx.channel.mention} — Par {ctx.author.mention}")
 
 @bot.command(name="unlock", help="Déverrouiller le salon (staff).")
 async def unlock(ctx):
@@ -4563,6 +4549,8 @@ async def unlock(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=over,
                                       reason=f"Déverrouillage par {ctx.author}")
     await ctx.send("🔓 Salon **déverrouillé**.")
+    await _log_general(ctx.guild, "🔓 Salon déverrouillé",
+                       f"{ctx.channel.mention} — Par {ctx.author.mention}", color=ICE)
 
 @bot.command(name="mute", aliases=["timeout"], help="Muter un membre (staff). <membre> <minutes>")
 async def mute(ctx, member: discord.Member, minutes: int = 10):
@@ -4573,6 +4561,8 @@ async def mute(ctx, member: discord.Member, minutes: int = 10):
     minutes = max(1, min(minutes, 28 * 24 * 60))   # limite Discord : 28 jours
     await member.timeout(timedelta(minutes=minutes), reason="Mute par Emilia Frost")
     await ctx.send(f"🔇 **{member.display_name}** muté pour **{minutes} min**.")
+    await _log_general(ctx.guild, "🔇 Mute",
+                       f"**{member.mention}** — {minutes} min — Par {ctx.author.mention}")
 
 @bot.command(name="unmute", help="Lever le mut (staff). <membre>")
 async def unmute(ctx, member: discord.Member):
@@ -4580,6 +4570,7 @@ async def unmute(ctx, member: discord.Member):
         await ctx.send(q("no_perm")); return
     await member.timeout(None, reason=f"Unmute par {ctx.author}")
     await ctx.send(f"✅ **{member.display_name}** peut de nouveau parler.")
+    await _log_general(ctx.guild, "🔊 Unmute", f"**{member.mention}** — Par {ctx.author.mention}", color=ICE)
 
 @bot.command(name="kick", help="Expulser un membre (staff). <membre> [motif]")
 async def kick(ctx, member: discord.Member, *, reason: str = "Sans motif"):
@@ -4589,6 +4580,8 @@ async def kick(ctx, member: discord.Member, *, reason: str = "Sans motif"):
         await ctx.send(q("no_perm")); return
     await member.kick(reason=reason)
     await ctx.send(f"👢 **{member.display_name}** expulsé.")
+    await _log_general(ctx.guild, "👢 Kick",
+                       f"**{member.mention}** — {reason} — Par {ctx.author.mention}")
 
 @bot.command(name="slowmode", help="Mode lent en secondes (staff). <secondes>")
 async def slowmode(ctx, seconds: int = 0):
@@ -5147,27 +5140,6 @@ async def amende(ctx, member: discord.Member, amount: int, *, reason: str = "Inf
                    "VALUES (?,?,?,?,?,?)", (g.id, member.id, "amende", reason, ctx.author.id, now()))
         db.commit()
         await ctx.send(f"🧾 **{member.display_name}** amendé de **{fmt(amount)}** ({reason}).")
-    finally:
-        db.close()
-
-@commands.cooldown(rate=1, per=1, type=commands.BucketType.user)
-@bot.command(name="evader", help="Tenter de s'évader de prison (1/24 h).")
-async def evader(ctx):
-    g = ctx.guild
-    db = connect()
-    try:
-        row = in_prison(db, g.id, ctx.author.id)
-        if not row:
-            await ctx.send("❄ Tu n'es pas en prison."); return
-        chance = 0.15 + (get_user(db, g.id, ctx.author.id)["level"] * 0.005)
-        if random.random() < chance:
-            db.execute("UPDATE prison SET released=1, released_at=? WHERE id=?", (now(), row["id"]))
-            db.commit()
-            await ctx.send("🏃 **ÉVASION RÉUSSIE !** Tu es libre... pour l'instant.")
-        else:
-            db.execute("UPDATE prison SET released_at=released_at+1800 WHERE id=?", (row["id"],))
-            db.commit()
-            await ctx.send("❌ Évasion ratée. **+30 min** de détention.")
     finally:
         db.close()
 
