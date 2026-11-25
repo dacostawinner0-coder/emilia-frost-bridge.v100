@@ -62,7 +62,11 @@ OWNER_COMMANDS = {"winneradd", "dashboard", "gencode", "activity", "journal", "v
 
 STAFF_COMMANDS = (set(ef.STAFF_COMMANDS) - {"winneradd", "winner", "dashboard"}) | {
     "setprefix", "autosuivi", "claim", "ticketadd", "ticketremove", "bumpset", "bumpleave",
-    "rolestaff", "staffup", "staffdown", "recrutsetup", "recrutrole", "recrutquestion",
+    "rolestaff", "rolestaffremove", "rolestaffcap", "rolestaffwaitrole",
+    "staffup", "staffdown", "staffremove", "staffinfo", "staffboard",
+    "staffweights", "staffthreshold", "staffactivitywindow", "staffderank",
+    "staffprotect", "staffunprotect", "showstaffconfig",
+    "recrutsetup", "recrutrole", "recrutquestion", "recrutcooldown", "recrutlist",
     "config", "showconfig", "setlog", "setlogadmin", "setwelcome", "setleave", "setchest", "setevent",
     "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf",
     "shopadd", "shopstock", "shopprice", "shopremove", "verify", "verifsetup", "giveawayclaimtime",
@@ -1261,8 +1265,13 @@ CATEGORIES = {
     "📩 Tickets & giveaways": {"ticketpanel", "ticketping", "tickettype", "ticketnote", "ticketnotes", "claim", "close",
                                "ticketadd", "ticketremove", "chastaff", "giveaway", "gwreroll", "claimgw"},
     "🌍 BumpWorld": {"bump", "bumpset", "bumpleave"},
-    "🏅 Staff & recrutement": {"rolestaff", "staffup", "staffdown", "staffstats", "rankstaff",
-                              "recrutsetup", "recrutrole", "recrutquestion"},
+    "🏅 Staff & recrutement": {"rolestaff", "rolestaffremove", "rolestaffcap", "rolestaffwaitrole",
+                              "staffup", "staffdown", "staffremove", "staffinfo", "staffboard",
+                              "staffweights", "staffthreshold", "staffactivitywindow", "staffderank",
+                              "staffprotect", "staffunprotect", "showstaffconfig",
+                              "staffstats", "rankstaff", "recrutstatut",
+                              "recrutsetup", "recrutrole", "recrutquestion", "recrutcooldown",
+                              "recrutlist"},
     "⚙️ Administration": {"config", "showconfig", "setlog", "setlogadmin", "setwelcome", "setleave", "setchest", "setevent",
                           "setrole", "ticketcategory", "setjournal", "givemoney", "setmoney", "givemf", "setmf", "shopadd",
                           "shopstock", "shopprice", "shopremove", "adminabuse", "setprefix", "autosuivi", "giveawayclaimtime",
@@ -1426,6 +1435,7 @@ async def _setup_hook():
     bot.add_dynamic_items(ef.RateButton)
     ebw.register_persistent_views()
     est.register_persistent_views()
+    est.start_loops()
     bot.add_view(ef.GiveawayClaimView())
     for _k in ("member", "staff", "owner"):
         bot.add_view(HelpView(_k))

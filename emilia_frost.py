@@ -2184,17 +2184,11 @@ async def warn(ctx, member: discord.Member, *, reason: str = ""):
             "VALUES (?,?,?,?,?)", (g.id, member.id, reason, ctx.author.id, now()))
         db.commit()
         log_event(db, g.id, ctx.author.id, "warn", f"{member.id} : {reason}")
-        logch = config_get(db, g.id, "mod_log_channel_id")
-        if logch:
-            ch = g.get_channel(int(logch))
-            if ch:
-                await ch.send(embed=frost_embed(
-                    title="⚠️ Avertissement",
-                    desc=f"**{member.mention}** — {reason}\nPar {ctx.author.mention}",
-                    color=RED))
-        await ctx.send(f"⚠️ {member.mention} averti(e) : {reason or 'sans motif'}")
     finally:
         db.close()
+    await _log_general(g, "⚠️ Avertissement", f"**{member.mention}** — {reason}\nPar {ctx.author.mention}")
+    bot.dispatch("emilia_staff_action", g.id, ctx.author.id)
+    await ctx.send(f"⚠️ {member.mention} averti(e) : {reason or 'sans motif'}")
 
 @bot.command(name="warnhistory", help="Historique des avertissements d'un membre.")
 async def warnhistory(ctx, member: discord.Member = None):
@@ -2271,6 +2265,7 @@ async def ban(ctx, member: discord.Member, *, reason: str = ""):
     await _log_general(g, "🔒 Role-ban",
                        f"**{member.mention}** — {reason or '—'}\nPar {ctx.author.mention}\n"
                        f"Rôles retirés : {', '.join(removed) or 'aucun'}")
+    bot.dispatch("emilia_staff_action", g.id, ctx.author.id)
     await ctx.send(f"{q('ban')}\n🔒 {member.mention} est role-banni(e).")
 
 @bot.command(name="banned", help="Liste les role-bannis, ou l'état d'un membre précis. [@membre]")
@@ -2365,6 +2360,7 @@ async def unban(ctx, member: discord.Member):
         db.close()
     note = f" {len(restored)} rôle(s) restauré(s) : {', '.join(restored)}." if restored else ""
     await _log_general(g, "🔓 Role-unban", f"**{member.mention}** — Par {ctx.author.mention}{note}", color=ICE)
+    bot.dispatch("emilia_staff_action", g.id, ctx.author.id)
     await ctx.send(f"❄ {member.mention} est libéré(e). La glace pardonne, rarement.{note}")
 
 @bot.command(name="setbanrole", help="Configurer le rôle Ban (admins).")
@@ -4529,6 +4525,7 @@ async def clear(ctx, amount: int = 10):
     await ctx.send(f"❄ **{amount}** messages effacés.", delete_after=5)
     await _log_general(ctx.guild, "🧹 Messages effacés",
                        f"**{amount}** message(s) dans {ctx.channel.mention} — Par {ctx.author.mention}")
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="lock", help="Verrouiller le salon (staff).")
 async def lock(ctx):
@@ -4540,6 +4537,7 @@ async def lock(ctx):
     await ctx.send("🔒 Salon **verrouillé**.")
     await _log_general(ctx.guild, "🔒 Salon verrouillé",
                        f"{ctx.channel.mention} — Par {ctx.author.mention}")
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="unlock", help="Déverrouiller le salon (staff).")
 async def unlock(ctx):
@@ -4551,6 +4549,7 @@ async def unlock(ctx):
     await ctx.send("🔓 Salon **déverrouillé**.")
     await _log_general(ctx.guild, "🔓 Salon déverrouillé",
                        f"{ctx.channel.mention} — Par {ctx.author.mention}", color=ICE)
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="mute", aliases=["timeout"], help="Muter un membre (staff). <membre> <minutes>")
 async def mute(ctx, member: discord.Member, minutes: int = 10):
@@ -4563,6 +4562,7 @@ async def mute(ctx, member: discord.Member, minutes: int = 10):
     await ctx.send(f"🔇 **{member.display_name}** muté pour **{minutes} min**.")
     await _log_general(ctx.guild, "🔇 Mute",
                        f"**{member.mention}** — {minutes} min — Par {ctx.author.mention}")
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="unmute", help="Lever le mut (staff). <membre>")
 async def unmute(ctx, member: discord.Member):
@@ -4571,6 +4571,7 @@ async def unmute(ctx, member: discord.Member):
     await member.timeout(None, reason=f"Unmute par {ctx.author}")
     await ctx.send(f"✅ **{member.display_name}** peut de nouveau parler.")
     await _log_general(ctx.guild, "🔊 Unmute", f"**{member.mention}** — Par {ctx.author.mention}", color=ICE)
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="kick", help="Expulser un membre (staff). <membre> [motif]")
 async def kick(ctx, member: discord.Member, *, reason: str = "Sans motif"):
@@ -4582,6 +4583,7 @@ async def kick(ctx, member: discord.Member, *, reason: str = "Sans motif"):
     await ctx.send(f"👢 **{member.display_name}** expulsé.")
     await _log_general(ctx.guild, "👢 Kick",
                        f"**{member.mention}** — {reason} — Par {ctx.author.mention}")
+    bot.dispatch("emilia_staff_action", ctx.guild.id, ctx.author.id)
 
 @bot.command(name="slowmode", help="Mode lent en secondes (staff). <secondes>")
 async def slowmode(ctx, seconds: int = 0):
