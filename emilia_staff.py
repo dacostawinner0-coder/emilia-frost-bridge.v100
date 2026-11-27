@@ -121,8 +121,7 @@ def init_staff_db(db):
     _ensure_column(db, "staff_points", "moderation", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "staff_points", "branch", "TEXT NOT NULL DEFAULT 'defaut'")
     _ensure_column(db, "staff_points", "protected", "INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(db, "staff_rank_roles", "branch", "TEXT NOT NULL DEFAULT 'defaut'")
-    _ensure_column(db, "staff_rank_roles", "cap", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_staff_rank_roles(db)
     _ensure_column(db, "recruit_config", "cooldown_days", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "recruit_applications", "decided_at", "INTEGER")
     db.commit()
@@ -132,6 +131,30 @@ def _ensure_column(db, table, column, decl):
     cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _migrate_staff_rank_roles(db):
+    """L'ancienne table avait PRIMARY KEY (guild_id, level) ; la nouvelle a besoin de
+    (guild_id, level, branch) pour autoriser plusieurs branches au même niveau. Une simple
+    colonne ajoutée ne change pas la clé primaire — il faut reconstruire la table."""
+    cols = [r[1] for r in db.execute("PRAGMA table_info(staff_rank_roles)").fetchall()]
+    if "branch" in cols and "cap" in cols:
+        pk_cols = [r[1] for r in db.execute("PRAGMA table_info(staff_rank_roles)").fetchall() if r[5] > 0]
+        if set(pk_cols) == {"guild_id", "level", "branch"}:
+            return  # déjà la bonne structure
+    db.execute("ALTER TABLE staff_rank_roles RENAME TO staff_rank_roles_old")
+    db.execute("""CREATE TABLE staff_rank_roles (
+        guild_id INTEGER NOT NULL, level INTEGER NOT NULL, branch TEXT NOT NULL DEFAULT 'defaut',
+        role_id INTEGER NOT NULL, label TEXT, cap INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, level, branch)
+    )""")
+    old_cols = [r[1] for r in db.execute("PRAGMA table_info(staff_rank_roles_old)").fetchall()]
+    branch_expr = "branch" if "branch" in old_cols else "'defaut'"
+    cap_expr = "cap" if "cap" in old_cols else "0"
+    db.execute(f"INSERT OR IGNORE INTO staff_rank_roles (guild_id, level, branch, role_id, label, cap) "
+               f"SELECT guild_id, level, {branch_expr}, role_id, label, {cap_expr} FROM staff_rank_roles_old")
+    db.execute("DROP TABLE staff_rank_roles_old")
+    db.commit()
 
 
 # ── réglages par serveur (réutilise la table config générique d'emilia_frost) ──
